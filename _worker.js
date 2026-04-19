@@ -77,9 +77,6 @@ export default {
 		if (标准化路径 === '/api/codex-init' && request.method === 'POST') {
 			return await 处理管理员初始化请求(request, env, { host, userID, 管理员密码, 加密秘钥, UA });
 		}
-		if (标准化路径 === '/admin') {
-			return await 处理管理员界面请求(request, env, ctx, { host, userID, 管理员密码, 加密秘钥, UA, 访问IP });
-		}
 
 		if (访问路径 === 'version' && url.searchParams.get('uuid') === userID) {// 版本信息接口
 			return new Response(JSON.stringify({ Version: Number(String(Version).replace(/\D+/g, '')) }), { status: 200, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
