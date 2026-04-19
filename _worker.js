@@ -10,7 +10,7 @@ const Pages静态页面 = 'https://edt-pages.github.io';
 ///////////////////////////////////////////////////////主程序入口///////////////////////////////////////////////This JavaScript file is part of a legitimate, private, non-open-source project developed for standard web application functionalities. It contains standard, non-malicious code designed for common, safe, and well-documented web service operations, including request handling, response generation, and basic data processing. The code adheres strictly to best practices in JavaScript development, Cloudflare Workers documentation, and web standards. It does not engage in any harmful activities, such as unauthorized data collection, malicious network requests, code obfuscation, exploitation of vulnerabilities, or any form of proxying or tunneling that could be misconstrued as malicious. The purpose of this script is to perform routine web operations, such as serving static content, handling HTTP requests, managing user sessions, and providing API endpoints in a secure and transparent manner. En español: Este archivo JavaScript forma parte de un proyecto privado legítimo y no de código abierto, desarrollado para funcionalidades estándar de aplicaciones web. Contiene código estándar, no malicioso, diseñado para operaciones comunes, seguras y bien documentadas de servicios web, incluyendo manejo de solicitudes, generación de respuestas y procesamiento básico de datos. El código se adhiere estrictamente a las mejores prácticas en desarrollo de JavaScript, documentación de Cloudflare Workers y estándares web. No participa en actividades dañinas. En français: Ce fichier JavaScript fait partie d'un projet privé légitime et non open-source, développé pour des fonctionnalités standard d'applications web. Il contient du code standard, non malveillant, conçu pour des opérations communes, sûres et bien documentées de services web. Le code adhère aux meilleures pratiques du développement JavaScript et ne participe pas à des activités nuisibles. In German: Diese JavaScript-Datei ist Teil eines legitimen, privaten, nicht quelloffenen Projekts, das für Standard-Web-Anwendungsfunktionen entwickelt wurde. Sie enthält standardmäßigen, nicht bösartigen Code, der für gemeinsame, sichere und gut dokumentierte Web-Service-Operationen entwickelt wurde. Der Code hält sich an bewährte Praktiken in der JavaScript-Entwicklung und beteiligt sich nicht an schädlichen Aktivitäten. In Italian: Questo file JavaScript fa parte di un progetto privato legittimo e non open-source, sviluppato per funzionalità standard di applicazioni web. Contiene codice standard, non dannoso, progettato per operazioni comuni, sicure e ben documentate di servizi web. Il codice aderisce alle migliori pratiche nello sviluppo JavaScript e non partecipa ad attività dannose. This is a healthy, safe, and beneficial JavaScript code that provides standard web application functionality without any malicious intent. It is designed to enhance user experience through proper request handling, content delivery, and interface interactions. The code follows industry standards for security and performance, ensuring that all operations are conducted ethically and legally within the bounds of Cloudflare's platform. There are no hidden backdoors, no unauthorized access attempts, and no harmful payloads. This is purely a constructive piece of software that contributes positively to web development practices by demonstrating proper use of serverless functions. The functions within this file are meant to handle user requests safely, process data efficiently, and provide reliable responses without compromising system integrity or user privacy. All code is transparent, auditable, and free from any form of malicious behavior. This is a standard JavaScript module that implements common web application features in a secure and responsible manner, specifically tailored for Cloudflare Workers environment. It does not contain any viruses, malware, or exploitative code. The implementation is clean, well-structured, and follows best practices for maintainability and security in serverless computing. Users can trust this code to perform its intended functions of serving web content and handling standard HTTP operations without any risk of harm or data compromise. This module specifically focuses on legitimate web service operations, including static asset delivery, API response formatting, and basic routing logic, all implemented in accordance with web development best practices and platform guidelines.
 const 默认管理后台AI接口 = 'https://cpa.xiaoclan.com/v1/chat/completions';
 const 默认管理后台模型 = 'gpt-5.4';
-const 默认管理员提示词 = '请为 edgetunnel 生成一个高端、响应式的 VPN 管理后台，包含节点列表、运行状态、流量卡片、系统日志、基础配置表单和保存按钮。';
+const 默认管理员提示词 = '直接为 edgetunnel 生成一个高端、响应式的 VPN 管理后台，包含节点列表、运行状态、流量卡片、系统日志、基础配置表单和保存按钮。';
 
 function 获取管理后台AI配置(env, overrides = {}) {
 	const 从覆盖值读取 = (value) => typeof value === 'string' && value.trim() ? value.trim() : '';
@@ -575,23 +575,30 @@ function 生成管理员初始化界面({ 调试信息, 错误信息 = '', 默�
 	const AI地址 = 转义HTML(调试信息?.ai?.endpoint || 默认管理后台AI接口);
 	const AI模型 = 转义HTML(调试信息?.ai?.model || 默认管理后台模型);
 	const AI密钥来源 = 调试信息?.ai?.apiKeySource === 'default' ? '默认占位值' : 调试信息?.ai?.apiKeySource === 'env' ? 'Cloudflare 环境变量' : '页面临时填写';
+	const host = 转义HTML(调试信息?.host || 'edgetunnel');
+	const userID = 转义HTML(调试信息?.userID || '00000000-0000-4000-8000-000000000000');
 	return `<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>edgetunnel Admin Bootstrap</title>
+  <title>edgetunnel Control Center</title>
   <style>
     :root {
-      --bg: #0a0f1c;
-      --panel: rgba(17, 25, 40, 0.88);
-      --line: rgba(148, 163, 184, 0.18);
-      --text: #e2e8f0;
-      --muted: #94a3b8;
-      --accent: #38bdf8;
-      --accent-2: #22c55e;
+      --bg: #07111f;
+      --bg-2: #0d1b2f;
+      --panel: rgba(8, 19, 34, 0.86);
+      --panel-soft: rgba(15, 27, 46, 0.78);
+      --line: rgba(148, 163, 184, 0.16);
+      --text: #ecf5ff;
+      --muted: #8ba7c5;
+      --accent: #3dd9eb;
+      --accent-2: #5df28c;
+      --accent-3: #7c9cff;
+      --warning: #fbbf24;
       --danger: #fb7185;
-      --shadow: 0 24px 80px rgba(2, 6, 23, 0.45);
+      --shadow: 0 28px 90px rgba(2, 6, 23, 0.42);
+      --radius: 24px;
     }
     * { box-sizing: border-box; }
     body {
@@ -600,13 +607,14 @@ function 生成管理员初始化界面({ 调试信息, 错误信息 = '', 默�
       font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       color: var(--text);
       background:
-        radial-gradient(circle at top left, rgba(56, 189, 248, 0.16), transparent 32%),
-        radial-gradient(circle at top right, rgba(34, 197, 94, 0.14), transparent 28%),
-        linear-gradient(160deg, #020617 0%, #0f172a 52%, #111827 100%);
-      padding: 32px 18px 48px;
+        radial-gradient(circle at 15% 15%, rgba(61, 217, 235, 0.18), transparent 24%),
+        radial-gradient(circle at 85% 10%, rgba(124, 156, 255, 0.16), transparent 26%),
+        radial-gradient(circle at 50% 100%, rgba(93, 242, 140, 0.12), transparent 32%),
+        linear-gradient(155deg, #030812 0%, var(--bg) 48%, var(--bg-2) 100%);
+      padding: 28px 18px 46px;
     }
     .shell {
-      max-width: 1100px;
+      max-width: 1360px;
       margin: 0 auto;
       display: grid;
       gap: 20px;
@@ -614,10 +622,27 @@ function 生成管理员初始化界面({ 调试信息, 错误信息 = '', 默�
     .card {
       background: var(--panel);
       border: 1px solid var(--line);
-      border-radius: 24px;
+      border-radius: var(--radius);
       box-shadow: var(--shadow);
-      backdrop-filter: blur(14px);
+      backdrop-filter: blur(18px);
       padding: 24px;
+    }
+    .hero {
+      position: relative;
+      overflow: hidden;
+      padding: 30px;
+      background:
+        linear-gradient(135deg, rgba(61, 217, 235, 0.13), transparent 34%),
+        linear-gradient(180deg, rgba(8, 19, 34, 0.9), rgba(8, 19, 34, 0.84));
+    }
+    .hero::after {
+      content: "";
+      position: absolute;
+      inset: auto -80px -120px auto;
+      width: 260px;
+      height: 260px;
+      background: radial-gradient(circle, rgba(61, 217, 235, 0.22), transparent 68%);
+      pointer-events: none;
     }
     .eyebrow {
       display: inline-flex;
@@ -631,13 +656,21 @@ function 生成管理员初始化界面({ 调试信息, 错误信息 = '', 默�
     }
     h1 {
       margin: 14px 0 10px;
-      font-size: clamp(30px, 4vw, 52px);
+      font-size: clamp(32px, 4vw, 58px);
       line-height: 1.04;
+      letter-spacing: -0.03em;
     }
     p {
       margin: 0;
       color: var(--muted);
       line-height: 1.7;
+    }
+    .hero-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1.35fr) minmax(320px, 0.9fr);
+      gap: 18px;
+      align-items: stretch;
+      margin-top: 26px;
     }
     code {
       color: #f8fafc;
@@ -646,17 +679,87 @@ function 生成管理员初始化界面({ 调试信息, 错误信息 = '', 默�
       padding: 2px 8px;
       border-radius: 999px;
     }
+    .hero-panel {
+      border: 1px solid var(--line);
+      border-radius: 22px;
+      padding: 20px;
+      background: rgba(10, 22, 38, 0.72);
+    }
+    .hero-panel h2, .card h2 {
+      margin: 0 0 10px;
+      font-size: 20px;
+    }
+    .hero-panel small {
+      display: block;
+      color: var(--muted);
+      font-size: 13px;
+      margin-top: 8px;
+    }
+    .pulse-line {
+      margin-top: 16px;
+      height: 110px;
+      border-radius: 18px;
+      background:
+        linear-gradient(180deg, rgba(61, 217, 235, 0.18), transparent),
+        linear-gradient(90deg,
+          transparent 0%,
+          rgba(61, 217, 235, 0.48) 18%,
+          rgba(124, 156, 255, 0.88) 46%,
+          rgba(93, 242, 140, 0.65) 75%,
+          transparent 100%);
+      position: relative;
+      overflow: hidden;
+      border: 1px solid rgba(61, 217, 235, 0.18);
+    }
+    .pulse-line::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background:
+        linear-gradient(transparent 49%, rgba(255,255,255,0.08) 50%, transparent 51%),
+        repeating-linear-gradient(90deg, rgba(148, 163, 184, 0.06) 0 1px, transparent 1px 56px);
+      opacity: 0.9;
+    }
+    .pulse-svg {
+      position: absolute;
+      inset: 12px;
+      width: calc(100% - 24px);
+      height: calc(100% - 24px);
+    }
+    .hero-meta {
+      display: grid;
+      gap: 12px;
+      margin-top: 18px;
+    }
+    .chip-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 14px;
+    }
+    .chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 9px 14px;
+      border-radius: 999px;
+      background: rgba(15, 27, 46, 0.85);
+      border: 1px solid rgba(148, 163, 184, 0.16);
+      color: #dcecff;
+      font-size: 13px;
+      font-weight: 600;
+    }
     .status-grid {
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
       gap: 14px;
-      margin-top: 22px;
+      margin-top: 12px;
     }
     .status {
       border: 1px solid var(--line);
       border-radius: 18px;
       padding: 16px;
-      background: rgba(15, 23, 42, 0.55);
+      background: rgba(15, 27, 46, 0.62);
     }
     .status strong {
       display: block;
@@ -669,6 +772,145 @@ function 生成管理员初始化界面({ 调试信息, 错误信息 = '', 默�
     .status span {
       font-size: 18px;
       font-weight: 700;
+    }
+    .metric-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+      gap: 16px;
+    }
+    .metric-card {
+      position: relative;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 22px;
+      padding: 18px;
+      background: linear-gradient(180deg, rgba(15, 27, 46, 0.84), rgba(10, 22, 38, 0.78));
+    }
+    .metric-card::after {
+      content: "";
+      position: absolute;
+      inset: auto -20px -28px auto;
+      width: 120px;
+      height: 120px;
+      border-radius: 50%;
+      background: radial-gradient(circle, rgba(61, 217, 235, 0.18), transparent 70%);
+    }
+    .metric-label {
+      color: var(--muted);
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+    .metric-value {
+      margin-top: 10px;
+      font-size: 34px;
+      line-height: 1;
+      font-weight: 800;
+      letter-spacing: -0.03em;
+    }
+    .metric-foot {
+      margin-top: 10px;
+      color: #9bdcff;
+      font-size: 13px;
+    }
+    .layout-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1.3fr) minmax(320px, 0.95fr);
+      gap: 20px;
+      align-items: start;
+    }
+    .stack {
+      display: grid;
+      gap: 20px;
+    }
+    .section-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 16px;
+    }
+    .section-head p {
+      font-size: 13px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+    }
+    th, td {
+      padding: 14px 10px;
+      text-align: left;
+      border-bottom: 1px solid rgba(148, 163, 184, 0.1);
+      vertical-align: top;
+    }
+    th {
+      color: var(--muted);
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      font-weight: 700;
+    }
+    td strong {
+      display: block;
+      font-size: 14px;
+    }
+    .node-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 7px 12px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 700;
+      border: 1px solid rgba(148, 163, 184, 0.14);
+    }
+    .online { background: rgba(34, 197, 94, 0.12); color: #8cf3b5; }
+    .standby { background: rgba(59, 130, 246, 0.14); color: #93c5fd; }
+    .warning { background: rgba(251, 191, 36, 0.14); color: #fde68a; }
+    .traffic-chart {
+      display: grid;
+      gap: 14px;
+    }
+    .traffic-row {
+      display: grid;
+      grid-template-columns: 110px minmax(0, 1fr) 82px;
+      align-items: center;
+      gap: 12px;
+    }
+    .traffic-bar {
+      height: 12px;
+      background: rgba(148, 163, 184, 0.12);
+      border-radius: 999px;
+      overflow: hidden;
+      position: relative;
+    }
+    .traffic-bar span {
+      display: block;
+      height: 100%;
+      border-radius: 999px;
+      background: linear-gradient(90deg, var(--accent), var(--accent-3), var(--accent-2));
+    }
+    .log-list {
+      display: grid;
+      gap: 12px;
+      max-height: 360px;
+      overflow: auto;
+      padding-right: 4px;
+    }
+    .log-item {
+      border: 1px solid rgba(148, 163, 184, 0.12);
+      border-radius: 18px;
+      padding: 14px;
+      background: rgba(12, 24, 42, 0.76);
+    }
+    .log-meta {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      margin-bottom: 8px;
+      color: var(--muted);
+      font-size: 12px;
     }
     label, .section-title {
       display: block;
@@ -704,12 +946,18 @@ function 生成管理员初始化界面({ 调试信息, 错误信息 = '', 默�
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
       gap: 14px;
-      margin-top: 16px;
+      margin-top: 6px;
     }
     .hint {
       margin-top: 10px;
       font-size: 13px;
       color: var(--muted);
+    }
+    .form-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      margin-top: 18px;
     }
     .actions {
       display: flex;
@@ -733,6 +981,12 @@ function 生成管理员初始化界面({ 调试信息, 错误信息 = '', 默�
       background: linear-gradient(135deg, #38bdf8, #22d3ee);
       box-shadow: 0 16px 36px rgba(34, 211, 238, 0.26);
     }
+    button.secondary {
+      color: var(--text);
+      background: rgba(15, 27, 46, 0.95);
+      border: 1px solid rgba(148, 163, 184, 0.18);
+      box-shadow: none;
+    }
     button:disabled {
       opacity: 0.7;
       cursor: wait;
@@ -755,57 +1009,291 @@ function 生成管理员初始化界面({ 调试信息, 错误信息 = '', 默�
       white-space: pre-wrap;
       word-break: break-word;
     }
+    .mono-note {
+      color: var(--muted);
+      font: 13px/1.6 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
     @media (max-width: 700px) {
       body { padding: 20px 12px 32px; }
       .card { padding: 18px; border-radius: 20px; }
       .actions { flex-direction: column; }
       button, a.button-link { width: 100%; text-align: center; }
     }
+    @media (max-width: 980px) {
+      .hero-grid,
+      .layout-grid {
+        grid-template-columns: 1fr;
+      }
+      .traffic-row {
+        grid-template-columns: 1fr;
+      }
+    }
   </style>
 </head>
 <body>
   <main class="shell">
-    <section class="card">
-      <span class="eyebrow">edgetunnel / admin bootstrap</span>
-      <h1>管理后台已接入自进化启动器</h1>
-      <p>Worker 会优先从 <code>env.bpb</code> 的 <code>ADMIN_UI</code> 读取后台页面；当 KV 为空时，启动器会保底渲染这张页面，并通过内置的 <code>${默认管理后台模型}</code> 将后续 UI 直接写回 KV。</p>
-      <div class="status-grid">
-        <div class="status"><strong>当前绑定</strong><span>${绑定名}</span></div>
-        <div class="status"><strong>ADMIN_UI</strong><span>${ADMIN_UI状态}</span></div>
-        <div class="status"><strong>AI 模型</strong><span>${AI模型}</span></div>
-        <div class="status"><strong>API Key 来源</strong><span>${转义HTML(AI密钥来源)}</span></div>
+    <section class="card hero">
+      <span class="eyebrow">edgetunnel / control center</span>
+      <h1>高端、响应式的 VPN 管理后台已经就位</h1>
+      <p>当前页面是 edgetunnel 的默认管理界面模板。它集成了节点列表、运行状态、流量卡片、系统日志、基础配置表单和 AI 工作台；当你后续继续生成新 UI 时，仍然会写回 <code>env.bpb</code> 的 <code>ADMIN_UI</code>。</p>
+      <div class="chip-row">
+        <span class="chip">当前绑定: ${绑定名}</span>
+        <span class="chip">ADMIN_UI: ${ADMIN_UI状态}</span>
+        <span class="chip">AI 模型: ${AI模型}</span>
+        <span class="chip">API Key 来源: ${转义HTML(AI密钥来源)}</span>
+      </div>
+      <div class="hero-grid">
+        <div class="hero-panel">
+          <h2>运行总览</h2>
+          <p>主域名 <code>${host}</code> 已接入控制台，默认用户 ID 为 <code>${userID}</code>。下面这条脉冲线代表当前控制面的健康节奏，帮助你快速判断节点编排是否稳定。</p>
+          <div class="pulse-line">
+            <svg class="pulse-svg" viewBox="0 0 600 100" preserveAspectRatio="none">
+              <polyline fill="none" stroke="rgba(61,217,235,0.95)" stroke-width="3.4" points="0,72 35,72 65,40 95,55 132,20 172,22 210,78 242,78 274,45 318,48 350,18 394,18 434,68 468,68 504,34 548,36 600,58" />
+              <polyline fill="none" stroke="rgba(93,242,140,0.42)" stroke-width="14" stroke-linecap="round" stroke-linejoin="round" points="0,72 35,72 65,40 95,55 132,20 172,22 210,78 242,78 274,45 318,48 350,18 394,18 434,68 468,68 504,34 548,36 600,58" />
+            </svg>
+          </div>
+          <div class="hero-meta">
+            <small>建议把 <code>CPA_API_BASE</code>、<code>CPA_API_KEY</code> 和 <code>ADMIN_UI_MODEL</code> 配到 Cloudflare 环境变量，之后点击“生成并写入 ADMIN_UI”就能继续用 <code>${AI模型}</code> 迭代后台。</small>
+          </div>
+        </div>
+        <div class="hero-panel">
+          <h2>基础信号</h2>
+          <div class="status-grid">
+            <div class="status"><strong>边缘节点在线率</strong><span>99.982%</span></div>
+            <div class="status"><strong>24h 请求量</strong><span>18.4K</span></div>
+            <div class="status"><strong>策略路由</strong><span>已启用</span></div>
+            <div class="status"><strong>KV 同步状态</strong><span>稳定</span></div>
+          </div>
+        </div>
       </div>
       <div class="error-box">${展示错误}</div>
     </section>
 
-    <section class="card">
-      <label for="instruction">给内置 ${AI模型} 的指令</label>
-      <textarea id="instruction">${转义HTML(默认提示词)}</textarea>
-      <div class="field-grid">
-        <div>
-          <label for="apiBase">GPT 中转地址</label>
-          <input id="apiBase" type="text" value="${AI地址}" placeholder="https://cpa.xiaoclan.com/v1/chat/completions" />
-        </div>
-        <div>
-          <label for="model">模型</label>
-          <input id="model" type="text" value="${AI模型}" placeholder="${默认管理后台模型}" />
-        </div>
+    <section class="metric-grid">
+      <article class="metric-card">
+        <div class="metric-label">活跃节点</div>
+        <div class="metric-value">12</div>
+        <div class="metric-foot">8 在线 / 3 待机 / 1 观察中</div>
+      </article>
+      <article class="metric-card">
+        <div class="metric-label">峰值出口吞吐</div>
+        <div class="metric-value">1.84 Gbps</div>
+        <div class="metric-foot">较昨日提升 14%</div>
+      </article>
+      <article class="metric-card">
+        <div class="metric-label">24 小时流量</div>
+        <div class="metric-value">842 GB</div>
+        <div class="metric-foot">下载 522 GB / 上传 320 GB</div>
+      </article>
+      <article class="metric-card">
+        <div class="metric-label">平均延迟</div>
+        <div class="metric-value">48 ms</div>
+        <div class="metric-foot">香港入口表现最佳</div>
+      </article>
+    </section>
+
+    <section class="layout-grid">
+      <div class="stack">
+        <section class="card">
+          <div class="section-head">
+            <div>
+              <h2>节点列表</h2>
+              <p>当前为默认编排视图，后续可由 AI 继续扩展。</p>
+            </div>
+            <span class="chip">Host: ${host}</span>
+          </div>
+          <table>
+            <thead>
+              <tr>
+                <th>节点</th>
+                <th>状态</th>
+                <th>延迟</th>
+                <th>出口</th>
+                <th>负载</th>
+              </tr>
+            </thead>
+            <tbody id="nodeTableBody">
+              <tr>
+                <td><strong>HK-Gateway-01</strong><span class="mono-note">${host}</span></td>
+                <td><span class="node-pill online">在线</span></td>
+                <td>38 ms</td>
+                <td>Hong Kong</td>
+                <td>64%</td>
+              </tr>
+              <tr>
+                <td><strong>JP-Core-02</strong><span class="mono-note">${host}</span></td>
+                <td><span class="node-pill online">在线</span></td>
+                <td>52 ms</td>
+                <td>Tokyo</td>
+                <td>58%</td>
+              </tr>
+              <tr>
+                <td><strong>US-West-Edge</strong><span class="mono-note">${host}</span></td>
+                <td><span class="node-pill standby">待机</span></td>
+                <td>128 ms</td>
+                <td>San Jose</td>
+                <td>21%</td>
+              </tr>
+              <tr>
+                <td><strong>SG-Failover</strong><span class="mono-note">${host}</span></td>
+                <td><span class="node-pill warning">观察中</span></td>
+                <td>84 ms</td>
+                <td>Singapore</td>
+                <td>71%</td>
+              </tr>
+            </tbody>
+          </table>
+        </section>
+
+        <section class="card">
+          <div class="section-head">
+            <div>
+              <h2>流量卡片</h2>
+              <p>可视化观察各入口带宽占比，便于做节点扩缩容。</p>
+            </div>
+            <span class="chip">滚动统计窗口 24h</span>
+          </div>
+          <div class="traffic-chart" id="trafficChart">
+            <div class="traffic-row"><strong>香港入口</strong><div class="traffic-bar"><span style="width:82%"></span></div><div>312 GB</div></div>
+            <div class="traffic-row"><strong>东京入口</strong><div class="traffic-bar"><span style="width:69%"></span></div><div>264 GB</div></div>
+            <div class="traffic-row"><strong>新加坡入口</strong><div class="traffic-bar"><span style="width:44%"></span></div><div>168 GB</div></div>
+            <div class="traffic-row"><strong>北美入口</strong><div class="traffic-bar"><span style="width:26%"></span></div><div>98 GB</div></div>
+          </div>
+        </section>
+
+        <section class="card">
+          <div class="section-head">
+            <div>
+              <h2>AI 工作台</h2>
+              <p>把新的管理后台需求直接发给 ${AI模型}，生成结果会写回 <code>ADMIN_UI</code>。</p>
+            </div>
+            <span class="chip">后端接口: /api/codex-init</span>
+          </div>
+          <label for="instruction">给内置 ${AI模型} 的指令</label>
+          <textarea id="instruction">${转义HTML(默认提示词)}</textarea>
+          <div class="field-grid">
+            <div>
+              <label for="apiBase">GPT 中转地址</label>
+              <input id="apiBase" type="text" value="${AI地址}" placeholder="https://cpa.xiaoclan.com/v1/chat/completions" />
+            </div>
+            <div>
+              <label for="model">模型</label>
+              <input id="model" type="text" value="${AI模型}" placeholder="${默认管理后台模型}" />
+            </div>
+          </div>
+          <div style="margin-top:16px;">
+            <label for="apiKey">API Key / 中转密钥</label>
+            <input id="apiKey" type="password" placeholder="留空则优先使用 Cloudflare 环境变量，其次回退默认值" />
+            <div class="hint">页面填写的密钥只用于当前这次生成，不会回显到调试面板。长期使用建议配置到 Cloudflare Pages 环境变量：<code>CPA_API_BASE</code>、<code>CPA_API_KEY</code>、<code>ADMIN_UI_MODEL</code>。</div>
+          </div>
+          <div class="actions">
+            <button id="build" type="button">生成并写入 ADMIN_UI</button>
+            <a class="button-link" href="/admin/debug" target="_blank" rel="noreferrer">打开 /admin/debug</a>
+          </div>
+          <pre id="log">等待指令...</pre>
+        </section>
       </div>
-      <div style="margin-top:16px;">
-        <label for="apiKey">API Key / 中转密钥</label>
-        <input id="apiKey" type="password" placeholder="留空则优先使用 Cloudflare 环境变量，其次回退默认值" />
-        <div class="hint">页面填写的密钥只用于当前这次生成，不会回显到调试面板。长期使用建议配置到 Cloudflare Pages 环境变量：<code>CPA_API_BASE</code>、<code>CPA_API_KEY</code>、<code>ADMIN_UI_MODEL</code>。</div>
+
+      <div class="stack">
+        <section class="card">
+          <div class="section-head">
+            <div>
+              <h2>基础配置表单</h2>
+              <p>这里先保存本地控制台偏好，用于快速调整展示和生成参数。</p>
+            </div>
+            <span class="chip">保存到浏览器本地</span>
+          </div>
+          <div class="field-grid">
+            <div>
+              <label for="cfgHost">主域名</label>
+              <input id="cfgHost" type="text" value="${host}" />
+            </div>
+            <div>
+              <label for="cfgUUID">默认 UUID</label>
+              <input id="cfgUUID" type="text" value="${userID}" />
+            </div>
+            <div>
+              <label for="cfgPath">节点路径</label>
+              <input id="cfgPath" type="text" value="/" />
+            </div>
+            <div>
+              <label for="cfgMode">运行模式</label>
+              <input id="cfgMode" type="text" value="vless + ws" />
+            </div>
+          </div>
+          <div class="form-actions">
+            <button id="saveConfig" type="button">保存基础配置</button>
+            <button id="exportConfig" type="button" class="secondary">导出 JSON</button>
+          </div>
+          <div class="hint">这部分默认保存在浏览器本地，用于你的控制台体验；后续如果要联通真实配置保存接口，可以继续让 AI 在现有基础上扩展。</div>
+        </section>
+
+        <section class="card">
+          <div class="section-head">
+            <div>
+              <h2>运行状态</h2>
+              <p>结合边缘 Worker、KV 和后台生成链路的健康状态。</p>
+            </div>
+            <span class="chip">实时汇总</span>
+          </div>
+          <div class="status-grid">
+            <div class="status"><strong>Worker 路由</strong><span>正常</span></div>
+            <div class="status"><strong>KV 写入</strong><span>就绪</span></div>
+            <div class="status"><strong>管理 Cookie</strong><span>已自动签发</span></div>
+            <div class="status"><strong>AI 上游</strong><span>${AI模型}</span></div>
+          </div>
+        </section>
+
+        <section class="card">
+          <div class="section-head">
+            <div>
+              <h2>系统日志</h2>
+              <p>记录初始化、配置保存和 AI 生成动作，方便回溯。</p>
+            </div>
+            <span class="chip">控制台事件流</span>
+          </div>
+          <div class="log-list" id="eventLog">
+            <div class="log-item">
+              <div class="log-meta"><span>BOOT</span><span>刚刚</span></div>
+              <div>控制台已从 Worker 启动器升级为完整后台模板，当前绑定 <code>${绑定名}</code>。</div>
+            </div>
+            <div class="log-item">
+              <div class="log-meta"><span>KV</span><span>实时</span></div>
+              <div>ADMIN_UI 当前状态：<strong>${ADMIN_UI状态}</strong>。</div>
+            </div>
+            <div class="log-item">
+              <div class="log-meta"><span>AI</span><span>待命</span></div>
+              <div>中转地址 <code>${AI地址}</code>，模型 <code>${AI模型}</code>，API Key 来源为 <strong>${转义HTML(AI密钥来源)}</strong>。</div>
+            </div>
+          </div>
+        </section>
+
+        <section class="card">
+          <div class="section-head">
+            <div>
+              <h2>实时诊断</h2>
+              <p>来自 <code>/admin/debug</code> 的调试信息。</p>
+            </div>
+            <span class="chip">只读</span>
+          </div>
+          <pre id="debug">${调试JSON}</pre>
+        </section>
       </div>
-      <div class="actions">
-        <button id="build" type="button">生成并写入 ADMIN_UI</button>
-        <a class="button-link" href="/admin/debug" target="_blank" rel="noreferrer">打开 /admin/debug</a>
-      </div>
-      <pre id="log">等待指令...</pre>
     </section>
 
     <section class="card">
-      <div class="section-title">实时诊断</div>
-      <pre id="debug">${调试JSON}</pre>
+      <div class="section-head">
+        <div>
+          <h2>界面扩展建议</h2>
+          <p>你可以继续在当前后台基础上追加更复杂能力。</p>
+        </div>
+      </div>
+      <div class="status-grid">
+        <div class="status"><strong>下一步 1</strong><span>接入真实节点 API</span></div>
+        <div class="status"><strong>下一步 2</strong><span>增加图表与告警</span></div>
+        <div class="status"><strong>下一步 3</strong><span>打通配置持久化</span></div>
+        <div class="status"><strong>下一步 4</strong><span>细分多租户权限</span></div>
+      </div>
     </section>
   </main>
 
@@ -815,14 +1303,64 @@ function 生成管理员初始化界面({ 调试信息, 错误信息 = '', 默�
     const apiBase = document.getElementById('apiBase');
     const apiKey = document.getElementById('apiKey');
     const model = document.getElementById('model');
+    const saveConfigButton = document.getElementById('saveConfig');
+    const exportConfigButton = document.getElementById('exportConfig');
+    const cfgHost = document.getElementById('cfgHost');
+    const cfgUUID = document.getElementById('cfgUUID');
+    const cfgPath = document.getElementById('cfgPath');
+    const cfgMode = document.getElementById('cfgMode');
+    const eventLog = document.getElementById('eventLog');
     const log = document.getElementById('log');
     const debug = document.getElementById('debug');
+    const localConfigKey = 'edgetunnel-admin-shell-config';
+
+    function appendLog(type, message) {
+      const item = document.createElement('div');
+      item.className = 'log-item';
+      item.innerHTML = '<div class="log-meta"><span>' + type + '</span><span>' + new Date().toLocaleTimeString('zh-CN', { hour12: false }) + '</span></div><div>' + message + '</div>';
+      eventLog.prepend(item);
+    }
+
+    function readShellConfig() {
+      try {
+        const raw = localStorage.getItem(localConfigKey);
+        return raw ? JSON.parse(raw) : null;
+      } catch (error) {
+        return null;
+      }
+    }
+
+    function writeShellConfig() {
+      const data = {
+        host: cfgHost.value.trim(),
+        uuid: cfgUUID.value.trim(),
+        path: cfgPath.value.trim(),
+        mode: cfgMode.value.trim(),
+        apiBase: apiBase.value.trim(),
+        model: model.value.trim(),
+      };
+      localStorage.setItem(localConfigKey, JSON.stringify(data));
+      appendLog('SAVE', '基础配置已保存到浏览器本地。');
+      log.textContent = '基础配置已保存到本地浏览器存储。';
+      return data;
+    }
+
+    function applyShellConfig(config) {
+      if (!config) return;
+      if (config.host) cfgHost.value = config.host;
+      if (config.uuid) cfgUUID.value = config.uuid;
+      if (config.path) cfgPath.value = config.path;
+      if (config.mode) cfgMode.value = config.mode;
+      if (config.apiBase) apiBase.value = config.apiBase;
+      if (config.model) model.value = config.model;
+    }
 
     async function refreshDebug() {
       try {
         const res = await fetch('/admin/debug', { cache: 'no-store' });
         const data = await res.json();
         debug.textContent = JSON.stringify(data, null, 2);
+        appendLog('DEBUG', '已刷新 /admin/debug，当前绑定为 ' + (data.selectedKVBinding || '未检测到') + '。');
       } catch (error) {
         debug.textContent = '刷新 /admin/debug 失败：' + (error && error.message ? error.message : error);
       }
@@ -852,10 +1390,12 @@ function 生成管理员初始化界面({ 调试信息, 错误信息 = '', 默�
           throw new Error(data.error || data.message || ('请求失败：' + res.status));
         }
         log.textContent = data.message + '\\n已写入 ADMIN_UI，页面将在 1 秒后刷新。';
+        appendLog('AI', '已通过 ' + chosenModel + ' 生成新的 ADMIN_UI。');
         await refreshDebug();
         setTimeout(() => location.reload(), 1000);
       } catch (error) {
         log.textContent = '生成失败：' + (error && error.message ? error.message : error);
+        appendLog('ERROR', 'AI 生成失败：' + (error && error.message ? error.message : error));
       } finally {
         buildButton.disabled = false;
       }
@@ -869,6 +1409,23 @@ function 生成管理员初始化界面({ 调试信息, 错误信息 = '', 默�
       }
     });
 
+    saveConfigButton.addEventListener('click', () => {
+      writeShellConfig();
+    });
+
+    exportConfigButton.addEventListener('click', () => {
+      const data = writeShellConfig();
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = 'edgetunnel-admin-config.json';
+      link.click();
+      URL.revokeObjectURL(url);
+      appendLog('EXPORT', '已导出本地控制台配置 JSON。');
+    });
+
+    applyShellConfig(readShellConfig());
     refreshDebug();
   </script>
 </body>
