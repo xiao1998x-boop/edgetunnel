@@ -263,8 +263,8 @@ async function authorizeUser(uuid, env, ctx) {
 async function handleTCPOutBound(connState, addr, port, rawClientData, ws, vlessResponseHeader, env) {
   const { connect } = await import('cloudflare:sockets');
 
-  async function dial(targetAddr) {
-    const tcpSocket = connect({ hostname: targetAddr, port });
+  async function dial(targetAddr, targetPort) {
+    const tcpSocket = connect({ hostname: targetAddr, port: targetPort });
     connState.remoteSocketWrapper.value = tcpSocket;
     const writer = tcpSocket.writable.getWriter();
     await writer.write(rawClientData);
@@ -272,16 +272,47 @@ async function handleTCPOutBound(connState, addr, port, rawClientData, ws, vless
     return tcpSocket;
   }
 
+  // 动态读取 PROXYIP (优先从 D1 settings, fallback 到 env var, 再 fallback 到无)
+  const proxyIp = await getSetting(env, 'PROXYIP') || env.PROXY_IP || '';
+
   async function retryViaProxy() {
-    if (!env.PROXY_IP) return;
+    if (!proxyIp) return;
     try {
-      const sock = await dial(env.PROXY_IP);
+      // PROXYIP 支持 host:port 或纯 host
+      const [phost, pport] = proxyIp.includes(':') ? proxyIp.split(':') : [proxyIp, port];
+      const sock = await dial(phost, Number(pport) || port);
       pumpRemoteToWS(sock, ws, vlessResponseHeader, connState, null);
     } catch {}
   }
 
-  const tcpSocket = await dial(addr);
+  const tcpSocket = await dial(addr, port);
   pumpRemoteToWS(tcpSocket, ws, vlessResponseHeader, connState, retryViaProxy);
+}
+
+// ---------- 节点设置读取 (带 60s KV 缓存) ----------
+async function getSetting(env, key) {
+  const cacheKey = 'setting:' + key;
+  const cached = await env.KV.get(cacheKey);
+  if (cached !== null) return cached;
+  const row = await env.DB.prepare('SELECT value FROM settings WHERE key = ?').bind(key).first();
+  const val = row?.value ?? '';
+  await env.KV.put(cacheKey, val, { expirationTtl: 60 });
+  return val;
+}
+
+async function getAllSettings(env) {
+  const rows = await env.DB.prepare('SELECT key, value FROM settings').all();
+  const out = {};
+  for (const r of (rows.results || [])) out[r.key] = r.value;
+  return out;
+}
+
+async function setSetting(env, key, value) {
+  await env.DB.prepare(
+    `INSERT INTO settings (key, value, updated_at) VALUES (?, ?, strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`
+  ).bind(key, value).run();
+  await env.KV.delete('setting:' + key);
 }
 
 function pumpRemoteToWS(remoteSocket, ws, vlessResponseHeader, connState, retry) {
@@ -511,22 +542,147 @@ async function handleSubscription(request, env, url) {
     return new Response('', { status: 410 });
   }
 
+  // 读节点设置
+  const settings = await getAllSettings(env);
   const host = url.host;
-  const remark = encodeURIComponent((row.email || 'node') + '@' + host.split('.')[0]);
-  const vless = `vless://${uuid}@${host}:443?encryption=none&security=tls&type=ws&host=${host}&path=%2F&sni=${host}#${remark}`;
+  const wsPath = settings.WS_PATH || '/';
+  const prefix = settings.NODE_NAME_PREFIX || 'node';
 
-  const format = url.searchParams.get('format');
-  if (format === 'plain' || format === 'vless') {
-    return new Response(vless, { headers: { 'content-type': 'text/plain; charset=utf-8' } });
+  // 解析地址列表, 一行一个, 格式 addr[:port][#备注]
+  const addrLines = (settings.ADDRESSES || '').split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+  // 默认: 如果没配列表, 就用当前 host 当唯一节点
+  const nodes = [];
+  if (addrLines.length === 0) {
+    nodes.push({ addr: host, port: 443, name: prefix });
+  } else {
+    addrLines.forEach((line, i) => {
+      const [addrPart, nameRaw] = line.split('#');
+      const [addr, portStr] = addrPart.split(':');
+      nodes.push({
+        addr: addr.trim(),
+        port: Number(portStr) || 443,
+        name: (nameRaw?.trim()) || `${prefix}-${i + 1}`,
+      });
+    });
   }
 
-  const b64 = btoa(vless + '\n');
-  return new Response(b64, {
-    headers: {
-      'content-type': 'text/plain; charset=utf-8',
-      'subscription-userinfo': buildSubUserInfo(row)
-    }
-  });
+  const format = (url.searchParams.get('sub') || url.searchParams.get('format') || 'vless').toLowerCase();
+  const sni = host;
+  const wsHost = host;   // WS host 头统一用 Pages 域名 (sni 走 CF)
+
+  // 构造 vless URI 列表
+  const vlessUris = nodes.map(n =>
+    `vless://${uuid}@${n.addr}:${n.port}?encryption=none&security=tls&type=ws&host=${wsHost}&path=${encodeURIComponent(wsPath)}&sni=${sni}#${encodeURIComponent(n.name)}`
+  );
+
+  const subInfoHeaders = {
+    'content-type': 'text/plain; charset=utf-8',
+    'subscription-userinfo': buildSubUserInfo(row),
+    'profile-update-interval': '24',
+  };
+
+  // --- 格式分发 ---
+  if (format === 'plain') {
+    return new Response(vlessUris.join('\n'), { headers: subInfoHeaders });
+  }
+
+  if (format === 'clash') {
+    const yaml = buildClashYaml(nodes, uuid, wsHost, wsPath, sni, prefix);
+    return new Response(yaml, { headers: { ...subInfoHeaders, 'content-type': 'text/yaml; charset=utf-8' } });
+  }
+
+  if (format === 'singbox' || format === 'sing-box') {
+    const json = buildSingBoxConfig(nodes, uuid, wsHost, wsPath, sni);
+    return new Response(json, { headers: { ...subInfoHeaders, 'content-type': 'application/json; charset=utf-8' } });
+  }
+
+  // 默认 vless base64 (v2rayN / Shadowrocket / v2rayNG 都吃)
+  const b64 = btoa(unescape(encodeURIComponent(vlessUris.join('\n') + '\n')));
+  return new Response(b64, { headers: subInfoHeaders });
+}
+
+function buildClashYaml(nodes, uuid, wsHost, wsPath, sni, groupName) {
+  const proxies = nodes.map(n => ({
+    name: n.name,
+    type: 'vless',
+    server: n.addr,
+    port: n.port,
+    uuid,
+    tls: true,
+    'skip-cert-verify': false,
+    servername: sni,
+    network: 'ws',
+    'ws-opts': { path: wsPath, headers: { Host: wsHost } },
+    udp: true,
+  }));
+  const names = proxies.map(p => p.name);
+  // 简易 YAML 序列化, 避免引 yaml 库
+  const y = [];
+  y.push('# Auto-generated by edgetunnel-mvp');
+  y.push('port: 7890');
+  y.push('socks-port: 7891');
+  y.push('allow-lan: false');
+  y.push('mode: rule');
+  y.push('log-level: info');
+  y.push('proxies:');
+  for (const p of proxies) {
+    y.push(`  - name: "${p.name}"`);
+    y.push(`    type: vless`);
+    y.push(`    server: ${p.server}`);
+    y.push(`    port: ${p.port}`);
+    y.push(`    uuid: ${p.uuid}`);
+    y.push(`    tls: true`);
+    y.push(`    servername: ${p.servername}`);
+    y.push(`    network: ws`);
+    y.push(`    ws-opts:`);
+    y.push(`      path: "${p['ws-opts'].path}"`);
+    y.push(`      headers:`);
+    y.push(`        Host: ${p['ws-opts'].headers.Host}`);
+    y.push(`    udp: true`);
+  }
+  y.push('proxy-groups:');
+  y.push(`  - name: "${groupName || 'PROXY'}"`);
+  y.push(`    type: select`);
+  y.push(`    proxies:`);
+  for (const n of names) y.push(`      - "${n}"`);
+  y.push(`  - name: "AUTO"`);
+  y.push(`    type: url-test`);
+  y.push(`    url: http://www.gstatic.com/generate_204`);
+  y.push(`    interval: 300`);
+  y.push(`    proxies:`);
+  for (const n of names) y.push(`      - "${n}"`);
+  y.push('rules:');
+  y.push(`  - MATCH,${groupName || 'PROXY'}`);
+  return y.join('\n') + '\n';
+}
+
+function buildSingBoxConfig(nodes, uuid, wsHost, wsPath, sni) {
+  const outbounds = nodes.map(n => ({
+    type: 'vless',
+    tag: n.name,
+    server: n.addr,
+    server_port: n.port,
+    uuid,
+    flow: '',
+    tls: { enabled: true, server_name: sni, insecure: false },
+    transport: { type: 'ws', path: wsPath, headers: { Host: wsHost } },
+  }));
+  const tags = outbounds.map(o => o.tag);
+  const config = {
+    log: { level: 'info' },
+    dns: { servers: [{ address: '8.8.8.8', detour: 'select' }] },
+    inbounds: [
+      { type: 'tun', tag: 'tun-in', inet4_address: '172.19.0.1/30', auto_route: true, stack: 'system', sniff: true },
+    ],
+    outbounds: [
+      { type: 'selector', tag: 'select', outbounds: ['auto', ...tags], default: 'auto' },
+      { type: 'urltest', tag: 'auto', outbounds: tags, url: 'http://www.gstatic.com/generate_204', interval: '5m' },
+      ...outbounds,
+      { type: 'direct', tag: 'direct' },
+    ],
+    route: { final: 'select' },
+  };
+  return JSON.stringify(config, null, 2);
 }
 
 function buildSubUserInfo(u) {
@@ -565,6 +721,30 @@ async function handleAdmin(request, env, url, ctx) {
   if (url.pathname === '/admin/sync-now') {
     const [pullR, pushR] = await Promise.all([pullUsersFromPanel(env), pushTrafficToPanel(env)]);
     return json({ ok: true, pull: pullR, push: pushR });
+  }
+
+  // --- 节点设置 ---
+  if (url.pathname === '/admin/settings' && request.method === 'GET') {
+    // 如果 settings 表不存在则返回空 (兼容老数据库)
+    try {
+      const s = await getAllSettings(env);
+      return json({ ok: true, settings: s });
+    } catch (e) {
+      return json({ ok: true, settings: {}, warn: 'settings table missing, run migration' });
+    }
+  }
+
+  if (url.pathname === '/admin/settings' && request.method === 'POST') {
+    const body = await request.json().catch(() => ({}));
+    if (!body || typeof body !== 'object') return json({ ok: false, error: 'invalid body' }, 400);
+    try {
+      for (const [k, v] of Object.entries(body)) {
+        await setSetting(env, k, String(v ?? ''));
+      }
+      return json({ ok: true, settings: await getAllSettings(env) });
+    } catch (e) {
+      return json({ ok: false, error: e.message }, 500);
+    }
   }
 
   if (url.pathname === '/admin/user' && request.method === 'GET') {
@@ -768,6 +948,16 @@ td.actions button { margin-right: 4px; }
 .preset button { background: #262a35; color: #e6e6e6; }
 .preset button:hover { background: #3b82f6; }
 #login-screen { max-width: 360px; margin: 80px auto; }
+.tabs { display: flex; gap: 4px; border-bottom: 1px solid #262a35; margin-bottom: 16px; }
+.tabs button { background: transparent; color: #9aa0a6; border: 0; padding: 10px 16px; border-radius: 0;
+               border-bottom: 2px solid transparent; font-size: 14px; }
+.tabs button.active { color: #e6e6e6; border-bottom-color: #3b82f6; background: transparent; }
+textarea { background: #0f1117; color: #e6e6e6; border: 1px solid #2a2e3a;
+           padding: 8px 10px; border-radius: 6px; font-size: 13px; width: 100%; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; resize: vertical; min-height: 140px; }
+textarea:focus { outline: none; border-color: #3b82f6; }
+.hint { font-size: 12px; color: #6b7280; margin-top: 4px; line-height: 1.5; }
+.kv { display: grid; grid-template-columns: 140px 1fr; gap: 10px 14px; align-items: start; }
+.kv label { line-height: 34px; margin: 0; }
 </style>
 </head>
 <body>
@@ -794,21 +984,73 @@ td.actions button { margin-right: 4px; }
       <div><div class="v" id="s-sync">—</div><div class="l">模式</div></div>
     </div>
 
-    <div class="card">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
-        <h2>用户列表</h2>
-        <div>
-          <button class="ghost small" id="refresh-btn">刷新</button>
-          <button id="new-user-btn">+ 新建用户</button>
+    <div class="tabs">
+      <button class="tab-btn active" data-tab="users">用户</button>
+      <button class="tab-btn" data-tab="settings">节点设置</button>
+    </div>
+
+    <div id="pane-users" class="pane">
+      <div class="card">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+          <h2>用户列表</h2>
+          <div>
+            <button class="ghost small" id="refresh-btn">刷新</button>
+            <button id="new-user-btn">+ 新建用户</button>
+          </div>
+        </div>
+        <table>
+          <thead><tr>
+            <th>邮箱</th><th>UUID</th><th>今日</th><th>总量</th><th>到期</th><th>状态</th><th></th>
+          </tr></thead>
+          <tbody id="users-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div id="pane-settings" class="pane" style="display:none">
+      <div class="card">
+        <h2>节点设置</h2>
+        <p class="hint" style="margin-bottom:14px">改完点右下角「保存」，立即生效（订阅端 60 秒内刷新）。</p>
+
+        <div class="kv">
+          <label>反代 IP (PROXYIP)</label>
+          <div>
+            <input id="st-PROXYIP" placeholder="空 = 不用反代, 例: cf.090227.xyz 或 1.2.3.4:443">
+            <div class="hint">当 Cloudflare 被目标服务拉黑（如 TG/部分小众站）时，流量会自动兜底到这个 IP。可填 cmliu 的优选 <code>cf.090227.xyz</code> / <code>ProxyIP.US.CMLiussss.net</code>。</div>
+          </div>
+
+          <label>节点地址列表</label>
+          <div>
+            <textarea id="st-ADDRESSES" placeholder="# 一行一个, 格式: addr[:port]#备注&#10;&#10;visa.com#美国-CF优选&#10;cf.090227.xyz:443#反代&#10;www.google.com#美国-谷歌&#10;104.16.0.1#港区"></textarea>
+            <div class="hint">订阅里每行生成一个节点。空 = 只用当前 Pages 域名做单节点。支持任意指向 Cloudflare 边缘的域名/IP（CNAME、优选IP、反代 IP 都行），端口一般 443。</div>
+          </div>
+
+          <label>节点名前缀</label>
+          <div>
+            <input id="st-NODE_NAME_PREFIX" placeholder="xiaox">
+            <div class="hint">如果某行没写 <code>#备注</code>，就用这个前缀自动命名（xiaox-1、xiaox-2...）。</div>
+          </div>
+
+          <label>WebSocket 路径</label>
+          <div>
+            <input id="st-WS_PATH" placeholder="/">
+            <div class="hint">客户端 ws path。默认 <code>/</code>。想增加隐蔽度可改 <code>/api</code> <code>/xxx</code>。改了要所有订阅重新拉一次。</div>
+          </div>
+
+          <label>SOCKS5 (预留)</label>
+          <div>
+            <input id="st-SOCKS5" placeholder="user:pass@host:port" disabled>
+            <div class="hint">上游 SOCKS5 代理，MVP 阶段未接入，留空即可。</div>
+          </div>
+        </div>
+
+        <div style="margin-top:20px;display:flex;justify-content:flex-end;gap:8px">
+          <button class="ghost" id="st-reload">重新读取</button>
+          <button id="st-save">保存</button>
         </div>
       </div>
-      <table>
-        <thead><tr>
-          <th>邮箱</th><th>UUID</th><th>今日</th><th>总量</th><th>到期</th><th>状态</th><th></th>
-        </tr></thead>
-        <tbody id="users-tbody"></tbody>
-      </table>
     </div>
+
   </div>
 </div>
 
@@ -835,15 +1077,26 @@ td.actions button { margin-right: 4px; }
 </div>
 
 <div id="sub-modal" class="modal">
-  <div class="modal-inner">
+  <div class="modal-inner" style="max-width:560px">
     <h1 style="font-size:18px;margin-bottom:8px">订阅链接</h1>
-    <p class="muted" style="margin-bottom:12px">发给客户粘贴到 V2RayN / Shadowrocket / Clash Meta。</p>
-    <label>订阅 URL（推荐）</label>
+    <p class="muted" style="margin-bottom:12px">根据客户端类型发对应的链接。都指向同一个用户、同一套节点，只是格式不同。</p>
+
+    <label>通用订阅 (V2RayN / Shadowrocket / v2rayNG)</label>
     <input id="sub-url" readonly>
-    <div style="margin-top:6px"><button class="small" id="sub-copy">复制订阅 URL</button></div>
-    <label style="margin-top:14px">VLESS 节点链接（单节点）</label>
+    <div style="margin-top:6px"><button class="small" id="sub-copy">复制</button></div>
+
+    <label style="margin-top:14px">Clash / Clash Meta / Stash</label>
+    <input id="sub-clash" readonly>
+    <div style="margin-top:6px"><button class="small" id="sub-copy-clash">复制</button></div>
+
+    <label style="margin-top:14px">Sing-box (sfm / sfa / sfi)</label>
+    <input id="sub-singbox" readonly>
+    <div style="margin-top:6px"><button class="small" id="sub-copy-singbox">复制</button></div>
+
+    <label style="margin-top:14px">VLESS 单节点 (手动导入)</label>
     <input id="sub-vless" readonly>
-    <div style="margin-top:6px"><button class="small ghost" id="vless-copy">复制 VLESS 链接</button></div>
+    <div style="margin-top:6px"><button class="small ghost" id="vless-copy">复制</button></div>
+
     <div style="margin-top:16px;text-align:right">
       <button class="ghost" id="sub-close">关闭</button>
     </div>
@@ -973,14 +1226,57 @@ function showSubModal(uuid, email) {
   const host = location.host;
   const remark = encodeURIComponent((email || 'node') + '@' + host.split('.')[0]);
   const vless = \`vless://\${uuid}@\${host}:443?encryption=none&security=tls&type=ws&host=\${host}&path=%2F&sni=\${host}#\${remark}\`;
-  const subUrl = \`\${location.origin}/sub/\${uuid}\`;
-  $('#sub-url').value = subUrl;
+  const base = \`\${location.origin}/sub/\${uuid}\`;
+  $('#sub-url').value = base;
+  $('#sub-clash').value = base + '?sub=clash';
+  $('#sub-singbox').value = base + '?sub=singbox';
   $('#sub-vless').value = vless;
   $('#sub-modal').classList.add('show');
 }
-$('#sub-copy').onclick = () => { navigator.clipboard.writeText($('#sub-url').value); toast('已复制订阅 URL'); };
-$('#vless-copy').onclick = () => { navigator.clipboard.writeText($('#sub-vless').value); toast('已复制 VLESS 链接'); };
+const copyFrom = (sel, label) => () => { navigator.clipboard.writeText($(sel).value); toast('已复制 ' + label); };
+$('#sub-copy').onclick         = copyFrom('#sub-url',     '通用订阅');
+$('#sub-copy-clash').onclick   = copyFrom('#sub-clash',   'Clash 订阅');
+$('#sub-copy-singbox').onclick = copyFrom('#sub-singbox', 'Sing-box 订阅');
+$('#vless-copy').onclick       = copyFrom('#sub-vless',   'VLESS 链接');
 $('#sub-close').onclick = () => $('#sub-modal').classList.remove('show');
+
+// --- Tab 切换 ---
+document.querySelectorAll('.tab-btn').forEach(b => {
+  b.onclick = () => {
+    document.querySelectorAll('.tab-btn').forEach(x => x.classList.remove('active'));
+    b.classList.add('active');
+    const tab = b.dataset.tab;
+    $('#pane-users').style.display    = tab === 'users'    ? 'block' : 'none';
+    $('#pane-settings').style.display = tab === 'settings' ? 'block' : 'none';
+    if (tab === 'settings') loadSettings();
+  };
+});
+
+// --- 节点设置加载/保存 ---
+const SETTING_KEYS = ['PROXYIP', 'ADDRESSES', 'NODE_NAME_PREFIX', 'WS_PATH', 'SOCKS5'];
+async function loadSettings() {
+  try {
+    const r = await api('/admin/settings');
+    const s = r.settings || {};
+    for (const k of SETTING_KEYS) {
+      const el = $('#st-' + k);
+      if (el) el.value = s[k] || '';
+    }
+    if (r.warn) toast('⚠ ' + r.warn);
+  } catch (e) { toast('读取失败: ' + e.message); }
+}
+$('#st-reload').onclick = loadSettings;
+$('#st-save').onclick = async () => {
+  const body = {};
+  for (const k of SETTING_KEYS) {
+    const el = $('#st-' + k);
+    if (el && !el.disabled) body[k] = el.value;
+  }
+  try {
+    await api('/admin/settings', { method: 'POST', body: JSON.stringify(body) });
+    toast('✓ 已保存，60 秒内生效');
+  } catch (e) { toast('保存失败: ' + e.message); }
+};
 
 $('#new-user-btn').onclick = () => $('#new-modal').classList.add('show');
 $('#new-cancel').onclick = () => $('#new-modal').classList.remove('show');

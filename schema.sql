@@ -48,3 +48,20 @@ INSERT OR IGNORE INTO node_state (key, value) VALUES
   ('last_daily_reset_at', ''),
   ('last_sync_user_count', '0'),
   ('last_error', '');
+
+-- ============================================================
+-- 节点设置表：PROXYIP / 多地址列表 / 节点命名前缀 / WS path
+-- 由 admin UI 的「节点设置」tab 写入, Worker 每次连接和订阅时读取
+-- ============================================================
+CREATE TABLE IF NOT EXISTS settings (
+  key        TEXT PRIMARY KEY,
+  value      TEXT NOT NULL,
+  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+INSERT OR IGNORE INTO settings (key, value) VALUES
+  ('PROXYIP', ''),                    -- 反代 IP (境外 TCP 被墙时兜底), 空=不兜底
+  ('ADDRESSES', ''),                  -- 多节点地址列表, 每行一个, 格式: addr:port#备注 或 addr
+  ('NODE_NAME_PREFIX', 'xiaox'),      -- 节点名前缀, 订阅里显示 xiaox-日本-01 这种
+  ('WS_PATH', '/'),                   -- WebSocket path, 默认 /
+  ('SOCKS5', '');                     -- SOCKS5 上游代理, 格式 user:pass@host:port, 预留
