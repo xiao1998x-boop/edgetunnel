@@ -30,6 +30,10 @@ export default {
         return handleSubscription(request, env, url);
       }
 
+      if (url.pathname.startsWith('/p/')) {
+        return handlePublicPage(request, env, url);
+      }
+
       if (url.pathname.startsWith('/admin/')) {
         return handleAdmin(request, env, url, ctx);
       }
@@ -313,6 +317,72 @@ async function setSetting(env, key, value) {
      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`
   ).bind(key, value).run();
   await env.KV.delete('setting:' + key);
+  if (key === 'ADDAPI' || key === 'ADDCSV') await env.KV.delete('optimized_ips');
+}
+
+// ---------- 从 ADDAPI / ADDCSV 拉优选 IP, KV 缓存 10 分钟 ----------
+async function fetchOptimizedAddresses(env, settings) {
+  const cached = await env.KV.get('optimized_ips');
+  if (cached !== null) {
+    try { return JSON.parse(cached); } catch {}
+  }
+  const list = [];
+
+  // ADDAPI: 多个 URL 用换行或逗号分隔, 每 URL 返回 text, 每行 addr[:port][#备注]
+  const addapiUrls = (settings.ADDAPI || '').split(/[\n,]+/).map(s => s.trim()).filter(Boolean);
+  for (const u of addapiUrls) {
+    try {
+      const r = await fetch(u, { cf: { cacheTtl: 300 } });
+      if (!r.ok) continue;
+      const txt = await r.text();
+      for (const line of txt.split(/\r?\n/)) {
+        const t = line.trim();
+        if (!t || t.startsWith('#')) continue;
+        const [addrPart, nameRaw] = t.split('#');
+        const [addr, portStr] = addrPart.split(':');
+        if (!addr) continue;
+        list.push({
+          addr: addr.trim(),
+          port: Number(portStr) || 443,
+          name: (nameRaw?.trim()) || addr.trim(),
+        });
+      }
+    } catch {}
+  }
+
+  // ADDCSV: iptest 格式 ip,port,tls,速度,丢包... 第一行 header 跳过
+  const addcsvUrls = (settings.ADDCSV || '').split(/[\n,]+/).map(s => s.trim()).filter(Boolean);
+  for (const u of addcsvUrls) {
+    try {
+      const r = await fetch(u, { cf: { cacheTtl: 300 } });
+      if (!r.ok) continue;
+      const txt = await r.text();
+      const rows = txt.split(/\r?\n/).slice(1);
+      for (const line of rows) {
+        if (!line.trim()) continue;
+        const cols = line.split(',').map(s => s.trim());
+        const [ip, portStr, tls] = cols;
+        if (!ip) continue;
+        // 只取 TLS=TRUE 或 tls=1
+        if (tls && !/^(true|1|yes)$/i.test(tls)) continue;
+        list.push({ addr: ip, port: Number(portStr) || 443, name: ip });
+      }
+    } catch {}
+  }
+
+  // 限制总数(订阅太长客户端处理慢), 去重
+  const seen = new Set();
+  const uniq = [];
+  for (const n of list) {
+    const k = n.addr + ':' + n.port;
+    if (seen.has(k)) continue;
+    seen.add(k);
+    uniq.push(n);
+    if (uniq.length >= 60) break;
+  }
+
+  await env.KV.put('optimized_ips', JSON.stringify(uniq), { expirationTtl: 600 });
+  return uniq;
 }
 
 function pumpRemoteToWS(remoteSocket, ws, vlessResponseHeader, connState, retry) {
@@ -548,25 +618,40 @@ async function handleSubscription(request, env, url) {
   const wsPath = settings.WS_PATH || '/';
   const prefix = settings.NODE_NAME_PREFIX || 'node';
 
-  // 解析地址列表, 一行一个, 格式 addr[:port][#备注]
-  const addrLines = (settings.ADDRESSES || '').split(/\r?\n/).map(s => s.trim()).filter(Boolean);
-  // 默认: 如果没配列表, 就用当前 host 当唯一节点
+  // 解析本地地址列表, 一行一个, 格式 addr[:port][#备注]
+  const addrLines = (settings.ADDRESSES || '').split(/\r?\n/).map(s => s.trim()).filter(l => l && !l.startsWith('#'));
   const nodes = [];
-  if (addrLines.length === 0) {
-    nodes.push({ addr: host, port: 443, name: prefix });
-  } else {
-    addrLines.forEach((line, i) => {
-      const [addrPart, nameRaw] = line.split('#');
-      const [addr, portStr] = addrPart.split(':');
-      nodes.push({
-        addr: addr.trim(),
-        port: Number(portStr) || 443,
-        name: (nameRaw?.trim()) || `${prefix}-${i + 1}`,
-      });
+  addrLines.forEach((line, i) => {
+    const [addrPart, nameRaw] = line.split('#');
+    const [addr, portStr] = addrPart.split(':');
+    if (!addr.trim()) return;
+    nodes.push({
+      addr: addr.trim(),
+      port: Number(portStr) || 443,
+      name: (nameRaw?.trim()) || `${prefix}-${i + 1}`,
     });
-  }
+  });
 
-  const format = (url.searchParams.get('sub') || url.searchParams.get('format') || 'vless').toLowerCase();
+  // 拼上 ADDAPI/ADDCSV 远程拉到的优选 IP
+  try {
+    const optimized = await fetchOptimizedAddresses(env, settings);
+    optimized.forEach((n, i) => {
+      nodes.push({ addr: n.addr, port: n.port, name: `${prefix}-优选-${i + 1}-${n.name}`.slice(0, 48) });
+    });
+  } catch {}
+
+  // 兜底: 一个节点都没有, 就用当前 host
+  if (nodes.length === 0) nodes.push({ addr: host, port: 443, name: prefix });
+
+  // --- 格式解析: 显式 ?sub= > User-Agent 自动识别 > 默认 vless base64 ---
+  let format = (url.searchParams.get('sub') || url.searchParams.get('format') || '').toLowerCase();
+  if (!format) {
+    const ua = (request.headers.get('user-agent') || '').toLowerCase();
+    if (/clash|mihomo|stash/.test(ua))                    format = 'clash';
+    else if (/sing-?box|sfa|sfi|sfm|sing_box/.test(ua))   format = 'singbox';
+    else if (/shadowrocket/.test(ua))                     format = 'plain';
+    else                                                   format = 'vless';   // v2rayN/NG 默认吃 base64
+  }
   const sni = host;
   const wsHost = host;   // WS host 头统一用 Pages 域名 (sni 走 CF)
 
@@ -691,6 +776,223 @@ function buildSubUserInfo(u) {
   let expire = 0;
   if (u.expire_at) expire = Math.floor(new Date(u.expire_at).getTime() / 1000);
   return `upload=0; download=${used}; total=${total}; expire=${expire}`;
+}
+
+// ========================================================================
+// 7b. 客户美化页 /p/{uuid}  —— 手机浏览器打开, QR + 一键导入
+// ========================================================================
+async function handlePublicPage(request, env, url) {
+  const uuid = url.pathname.slice('/p/'.length).replace(/\/$/, '');
+  if (!uuid) return new Response('missing uuid', { status: 400 });
+
+  const row = await env.DB.prepare(
+    `SELECT uuid, email, enabled, expire_at,
+            total_quota_bytes, total_used_bytes,
+            daily_quota_bytes, daily_used_bytes
+     FROM users WHERE uuid = ?`
+  ).bind(uuid).first();
+  if (!row) return new Response('node not found', { status: 404 });
+
+  const settings = await getAllSettings(env).catch(() => ({}));
+  const brand = settings.NODE_NAME_PREFIX || 'xiaox';
+  const origin = url.origin;
+  const subUrl = `${origin}/sub/${uuid}`;
+
+  // 各客户端 scheme
+  const encSub = encodeURIComponent(subUrl);
+  const clashUrl    = `clash://install-config?url=${encSub}&name=${encodeURIComponent(brand)}`;
+  const singboxUrl  = `sing-box://import-remote-profile?url=${encSub}#${encodeURIComponent(brand)}`;
+  // Shadowrocket: sub://base64(url) 或 shadowrocket://add/sub://base64
+  const srB64 = btoa(subUrl).replace(/=+$/, '');
+  const shadowrocketUrl = `shadowrocket://add/sub://${srB64}`;
+  const surgeUrl = `surge:///install-config?url=${encSub}&name=${encodeURIComponent(brand)}`;
+
+  const usedPct = row.total_quota_bytes > 0
+    ? Math.min(100, (row.total_used_bytes / row.total_quota_bytes) * 100) : 0;
+  const dailyPct = row.daily_quota_bytes > 0
+    ? Math.min(100, (row.daily_used_bytes / row.daily_quota_bytes) * 100) : 0;
+  const expired = row.expire_at && new Date(row.expire_at) < new Date();
+  const daysLeft = row.expire_at
+    ? Math.max(0, Math.ceil((new Date(row.expire_at).getTime() - Date.now()) / 86400000))
+    : null;
+
+  const status = !row.enabled ? { label: '已禁用', cls: 'err' }
+    : expired ? { label: '已过期', cls: 'err' }
+    : daysLeft !== null && daysLeft <= 7 ? { label: `${daysLeft} 天后到期`, cls: 'warn' }
+    : { label: '正常', cls: 'ok' };
+
+  const html = `<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="color-scheme" content="dark light">
+<title>${escapeHtml(brand)} · 我的节点</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+body { font-family: -apple-system, "PingFang SC", "Segoe UI", Roboto, sans-serif;
+       background: linear-gradient(180deg, #0f1117 0%, #151823 100%); color: #e6e6e6;
+       min-height: 100vh; padding: max(16px, env(safe-area-inset-top)) 16px env(safe-area-inset-bottom); }
+.wrap { max-width: 500px; margin: 0 auto; }
+h1 { font-size: 22px; margin: 24px 0 6px; font-weight: 600; }
+.muted { color: #8b8fa5; font-size: 13px; }
+.card { background: #1a1d26; border: 1px solid #262a35; border-radius: 14px; padding: 18px; margin-bottom: 14px; }
+.row { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+.row + .row { margin-top: 14px; }
+.bar { background: #262a35; height: 6px; border-radius: 3px; overflow: hidden; margin-top: 6px; }
+.bar-fill { height: 100%; background: #3b82f6; transition: width .2s; }
+.bar-fill.warn { background: #f59e0b; }
+.bar-fill.err  { background: #ef4444; }
+.badge { display: inline-block; padding: 3px 10px; border-radius: 4px; font-size: 12px; font-weight: 500; }
+.badge.ok   { background: #064e3b; color: #6ee7b7; }
+.badge.warn { background: #78350f; color: #fcd34d; }
+.badge.err  { background: #7f1d1d; color: #fca5a5; }
+.big-btn { display: flex; align-items: center; gap: 14px; width: 100%; padding: 14px 16px;
+           background: #3b82f6; color: #fff; border: 0; border-radius: 12px; font-size: 15px;
+           font-weight: 500; text-decoration: none; margin-bottom: 10px; cursor: pointer; }
+.big-btn:active { opacity: .85; }
+.big-btn .ic { font-size: 22px; }
+.big-btn.ghost { background: #262a35; color: #e6e6e6; }
+.big-btn .sub { font-size: 11px; opacity: .7; margin-top: 2px; }
+.big-btn .col { display: flex; flex-direction: column; align-items: flex-start; flex: 1; }
+.url-box { background: #0f1117; border: 1px solid #262a35; border-radius: 8px;
+           padding: 10px 12px; font-size: 12px; word-break: break-all; font-family: ui-monospace, Menlo, monospace;
+           color: #9aa0a6; margin-top: 8px; }
+.copy-btn { background: #262a35; color: #e6e6e6; border: 0; padding: 8px 14px;
+            border-radius: 6px; font-size: 12px; font-weight: 500; cursor: pointer; }
+.copy-btn:active { background: #3b82f6; }
+#qr { display: flex; justify-content: center; padding: 18px; background: #fff; border-radius: 12px; margin-top: 10px; }
+.footer { text-align: center; color: #6b7280; font-size: 12px; margin: 24px 0 40px; }
+.toast { position: fixed; bottom: 30px; left: 50%; transform: translateX(-50%) translateY(80px);
+         background: #1a1d26; border: 1px solid #3b82f6; padding: 10px 18px; border-radius: 22px;
+         font-size: 13px; opacity: 0; transition: all .25s; z-index: 100; }
+.toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+h2 { font-size: 14px; color: #9aa0a6; font-weight: 500; margin-bottom: 10px; letter-spacing: .5px; text-transform: uppercase; }
+.hint { font-size: 12px; color: #6b7280; margin-top: 8px; line-height: 1.5; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>${escapeHtml(brand)}</h1>
+  <p class="muted">账号 ${escapeHtml(row.email || uuid.slice(0,8))}</p>
+
+  <div class="card" style="margin-top: 16px">
+    <div class="row">
+      <div>
+        <div class="muted" style="font-size:12px">状态</div>
+        <div style="margin-top:4px"><span class="badge ${status.cls}">${status.label}</span></div>
+      </div>
+      <div style="text-align:right">
+        <div class="muted" style="font-size:12px">到期</div>
+        <div style="margin-top:4px;font-weight:500">${row.expire_at ? new Date(row.expire_at).toISOString().slice(0,10) : '∞'}</div>
+      </div>
+    </div>
+    <div class="row" style="flex-direction:column;align-items:stretch">
+      <div style="display:flex;justify-content:space-between;font-size:12px">
+        <span class="muted">总流量</span>
+        <span>${fmtBytesServer(row.total_used_bytes)} / ${row.total_quota_bytes ? fmtBytesServer(row.total_quota_bytes) : '∞'}</span>
+      </div>
+      <div class="bar"><div class="bar-fill ${usedPct>95?'err':usedPct>80?'warn':''}" style="width:${usedPct}%"></div></div>
+    </div>
+    ${row.daily_quota_bytes ? `
+    <div class="row" style="flex-direction:column;align-items:stretch">
+      <div style="display:flex;justify-content:space-between;font-size:12px">
+        <span class="muted">今日</span>
+        <span>${fmtBytesServer(row.daily_used_bytes)} / ${fmtBytesServer(row.daily_quota_bytes)}</span>
+      </div>
+      <div class="bar"><div class="bar-fill ${dailyPct>95?'err':dailyPct>80?'warn':''}" style="width:${dailyPct}%"></div></div>
+    </div>` : ''}
+  </div>
+
+  <div class="card">
+    <h2>一键导入</h2>
+    <a class="big-btn" href="${clashUrl}">
+      <span class="ic">🟢</span>
+      <span class="col"><span>Clash / Clash Meta / Stash</span><span class="sub">Android / Windows / Mac / iOS</span></span>
+    </a>
+    <a class="big-btn ghost" href="${singboxUrl}">
+      <span class="ic">📦</span>
+      <span class="col"><span>Sing-box (SFA / SFI / SFM)</span><span class="sub">Android / iOS / Mac</span></span>
+    </a>
+    <a class="big-btn ghost" href="${shadowrocketUrl}">
+      <span class="ic">🚀</span>
+      <span class="col"><span>Shadowrocket</span><span class="sub">iOS</span></span>
+    </a>
+    <a class="big-btn ghost" href="${surgeUrl}">
+      <span class="ic">⚡</span>
+      <span class="col"><span>Surge</span><span class="sub">iOS / Mac</span></span>
+    </a>
+    <div class="hint">点按钮未跳转？说明你手机上没装对应 App。先到 App Store / Play Store 装好再回来。</div>
+  </div>
+
+  <div class="card">
+    <h2>扫码导入</h2>
+    <div id="qr"></div>
+    <div class="hint">用另一台设备的客户端扫描，大部分 App（Clash/Shadowrocket/Sing-box）都支持"扫码添加订阅"。</div>
+  </div>
+
+  <div class="card">
+    <h2>订阅 URL（手动粘贴）</h2>
+    <div class="url-box" id="sub-url">${escapeHtml(subUrl)}</div>
+    <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">
+      <button class="copy-btn" data-copy="${escapeHtml(subUrl)}">复制通用订阅</button>
+      <button class="copy-btn" data-copy="${escapeHtml(subUrl)}?sub=clash">复制 Clash 专用</button>
+      <button class="copy-btn" data-copy="${escapeHtml(subUrl)}?sub=singbox">复制 Sing-box 专用</button>
+    </div>
+    <div class="hint">发给朋友时推荐发本页链接（${escapeHtml(origin)}/p/${uuid.slice(0,8)}…），他在手机浏览器打开点按钮就行。</div>
+  </div>
+
+  <div class="footer">powered by ${escapeHtml(brand)} · Cloudflare edge network</div>
+
+</div>
+
+<div id="toast" class="toast"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.4/build/qrcode.min.js"></script>
+<script>
+// QR
+const subUrl = ${JSON.stringify(subUrl)};
+if (typeof QRCode !== 'undefined') {
+  QRCode.toCanvas(subUrl, { width: 200, margin: 1, color: { dark: '#0f1117', light: '#ffffff' }}, (err, canvas) => {
+    if (canvas) document.getElementById('qr').appendChild(canvas);
+  });
+} else {
+  document.getElementById('qr').innerHTML = '<div style="color:#6b7280;font-size:12px">QR 库加载失败，请手动复制订阅 URL</div>';
+}
+
+// 复制
+function toast(msg) {
+  const t = document.getElementById('toast');
+  t.textContent = msg; t.classList.add('show');
+  clearTimeout(window._tt);
+  window._tt = setTimeout(() => t.classList.remove('show'), 1800);
+}
+document.querySelectorAll('[data-copy]').forEach(el => {
+  el.addEventListener('click', async () => {
+    try { await navigator.clipboard.writeText(el.dataset.copy); toast('✓ 已复制'); }
+    catch { toast('复制失败，请手动长按选择'); }
+  });
+});
+</script>
+</body>
+</html>`;
+
+  return new Response(html, { headers: { 'content-type': 'text/html; charset=utf-8' } });
+}
+
+function fmtBytesServer(b) {
+  if (!b) return '0';
+  const u = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let i = 0;
+  while (b >= 1024 && i < u.length - 1) { b /= 1024; i++; }
+  return (b < 10 ? b.toFixed(1) : Math.round(b)) + ' ' + u[i];
+}
+
+function escapeHtml(s) {
+  return String(s ?? '').replace(/[&<>"']/g, c => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+  }[c]));
 }
 
 // ========================================================================
@@ -1025,6 +1327,18 @@ textarea:focus { outline: none; border-color: #3b82f6; }
             <div class="hint">订阅里每行生成一个节点。空 = 只用当前 Pages 域名做单节点。支持任意指向 Cloudflare 边缘的域名/IP（CNAME、优选IP、反代 IP 都行），端口一般 443。</div>
           </div>
 
+          <label>优选IP API (ADDAPI)</label>
+          <div>
+            <textarea id="st-ADDAPI" placeholder="# 一行一个 URL, 返回 text, 每行 addr[:port][#备注]&#10;&#10;https://ipdb.api.030101.xyz/?type=bestcf&#10;https://ipdb.api.030101.xyz/?type=bestproxy"></textarea>
+            <div class="hint">远端 TXT 形式的优选 IP 源。订阅时按需拉取（KV 缓存 10 分钟），自动合并进节点列表。常用公开源：<code>ipdb.api.030101.xyz/?type=bestcf</code>。多个 URL 用换行或逗号分隔。</div>
+          </div>
+
+          <label>优选IP CSV (ADDCSV)</label>
+          <div>
+            <input id="st-ADDCSV" placeholder="https://example.com/result.csv">
+            <div class="hint">iptest 格式 CSV（表头 <code>ip,port,tls,...</code>），只取 <code>tls=TRUE</code> 的行。用于自建的 Cloudflare IP 测速结果。</div>
+          </div>
+
           <label>节点名前缀</label>
           <div>
             <input id="st-NODE_NAME_PREFIX" placeholder="xiaox">
@@ -1079,7 +1393,19 @@ textarea:focus { outline: none; border-color: #3b82f6; }
 <div id="sub-modal" class="modal">
   <div class="modal-inner" style="max-width:560px">
     <h1 style="font-size:18px;margin-bottom:8px">订阅链接</h1>
-    <p class="muted" style="margin-bottom:12px">根据客户端类型发对应的链接。都指向同一个用户、同一套节点，只是格式不同。</p>
+
+    <div style="background:#1b2942;border:1px solid #2a3f66;border-radius:10px;padding:12px 14px;margin-bottom:14px">
+      <div style="font-size:12px;color:#7f9cc7;margin-bottom:6px">⭐ 推荐发给客户（手机打开就能一键导入）</div>
+      <label style="margin-top:0">客户订阅页</label>
+      <input id="sub-page" readonly style="background:#0f1a30;font-weight:600">
+      <div style="margin-top:6px;display:flex;gap:6px;align-items:center">
+        <button class="small" id="sub-copy-page">复制</button>
+        <button class="small ghost" id="sub-open-page">在新标签打开</button>
+        <span class="hint" style="margin-left:auto">带余额/到期 + 一键导入</span>
+      </div>
+    </div>
+
+    <p class="muted" style="margin-bottom:12px">下面是原始订阅格式，高级用户手动导入用。</p>
 
     <label>通用订阅 (V2RayN / Shadowrocket / v2rayNG)</label>
     <input id="sub-url" readonly>
@@ -1227,6 +1553,8 @@ function showSubModal(uuid, email) {
   const remark = encodeURIComponent((email || 'node') + '@' + host.split('.')[0]);
   const vless = \`vless://\${uuid}@\${host}:443?encryption=none&security=tls&type=ws&host=\${host}&path=%2F&sni=\${host}#\${remark}\`;
   const base = \`\${location.origin}/sub/\${uuid}\`;
+  const page = \`\${location.origin}/p/\${uuid}\`;
+  $('#sub-page').value = page;
   $('#sub-url').value = base;
   $('#sub-clash').value = base + '?sub=clash';
   $('#sub-singbox').value = base + '?sub=singbox';
@@ -1234,6 +1562,8 @@ function showSubModal(uuid, email) {
   $('#sub-modal').classList.add('show');
 }
 const copyFrom = (sel, label) => () => { navigator.clipboard.writeText($(sel).value); toast('已复制 ' + label); };
+$('#sub-copy-page').onclick    = copyFrom('#sub-page',    '客户订阅页');
+$('#sub-open-page').onclick    = () => window.open($('#sub-page').value, '_blank');
 $('#sub-copy').onclick         = copyFrom('#sub-url',     '通用订阅');
 $('#sub-copy-clash').onclick   = copyFrom('#sub-clash',   'Clash 订阅');
 $('#sub-copy-singbox').onclick = copyFrom('#sub-singbox', 'Sing-box 订阅');
@@ -1253,7 +1583,7 @@ document.querySelectorAll('.tab-btn').forEach(b => {
 });
 
 // --- 节点设置加载/保存 ---
-const SETTING_KEYS = ['PROXYIP', 'ADDRESSES', 'NODE_NAME_PREFIX', 'WS_PATH', 'SOCKS5'];
+const SETTING_KEYS = ['PROXYIP', 'ADDRESSES', 'ADDAPI', 'ADDCSV', 'NODE_NAME_PREFIX', 'WS_PATH', 'SOCKS5'];
 async function loadSettings() {
   try {
     const r = await api('/admin/settings');

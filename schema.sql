@@ -61,7 +61,9 @@ CREATE TABLE IF NOT EXISTS settings (
 
 INSERT OR IGNORE INTO settings (key, value) VALUES
   ('PROXYIP', ''),                    -- 反代 IP (境外 TCP 被墙时兜底), 空=不兜底
-  ('ADDRESSES', ''),                  -- 多节点地址列表, 每行一个, 格式: addr:port#备注 或 addr
-  ('NODE_NAME_PREFIX', 'xiaox'),      -- 节点名前缀, 订阅里显示 xiaox-日本-01 这种
+  ('ADDRESSES', ''),                  -- 本地节点地址列表, 每行一个, 格式: addr:port#备注 或 addr
+  ('ADDAPI', ''),                     -- 优选IP API URL(s), 多个用换行/逗号分隔, 返回 txt 每行 addr[:port]
+  ('ADDCSV', ''),                     -- 优选IP CSV URL (iptest 格式 ip,port,tls,...), 只取 tls=TRUE
+  ('NODE_NAME_PREFIX', 'xiaox'),      -- 节点名前缀
   ('WS_PATH', '/'),                   -- WebSocket path, 默认 /
-  ('SOCKS5', '');                     -- SOCKS5 上游代理, 格式 user:pass@host:port, 预留
+  ('SOCKS5', '');                     -- SOCKS5 上游代理, 预留
