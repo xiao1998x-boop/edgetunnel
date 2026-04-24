@@ -20,6 +20,11 @@ export default {
     try {
       const url = new URL(request.url);
 
+      // 健康检查 (公开, 不查 DB, 给监控系统用)
+      if (url.pathname === '/healthz' || url.pathname === '/health') {
+        return new Response('ok', { status: 200, headers: { 'content-type': 'text/plain' } });
+      }
+
       if (url.pathname === '/admin' || url.pathname === '/admin/') {
         return new Response(ADMIN_HTML, {
           headers: { 'content-type': 'text/html; charset=utf-8' }
@@ -63,6 +68,12 @@ async function vlessOverWSHandler(request, env, ctx) {
   const webSocketPair = new WebSocketPair();
   const [client, server] = Object.values(webSocketPair);
   server.accept();
+
+  // 连接计数
+  if (globalThis._connMetrics) {
+    globalThis._connMetrics.active++;
+    globalThis._connMetrics.total++;
+  }
 
   const earlyDataHeader = request.headers.get('sec-websocket-protocol') || '';
   const readableWebSocketStream = makeReadableWebSocketStream(server, earlyDataHeader);
@@ -154,6 +165,12 @@ async function trojanOverWSHandler(request, env, ctx) {
   const webSocketPair = new WebSocketPair();
   const [client, server] = Object.values(webSocketPair);
   server.accept();
+
+  // 连接计数
+  if (globalThis._connMetrics) {
+    globalThis._connMetrics.active++;
+    globalThis._connMetrics.total++;
+  }
 
   const earlyDataHeader = request.headers.get('sec-websocket-protocol') || '';
   const readable = makeReadableWebSocketStream(server, earlyDataHeader);
@@ -858,14 +875,61 @@ async function handleUDPOutBound(ws, vlessResponseHeader, connState) {
 // 5. 流量落库
 // ========================================================================
 
+// ---------- 流量记账 - 懒批量化 ----------
+// 连接结束只在 isolate 内存累积, 每天 1 次或单 uuid 累积超阈值才刷 D1
+// 目的: 降 D1 写频次 (免费层 100k writes/day 限制), 避免流量暴增触发配额挂掉
+// 代价: isolate 回收时损失最多 24h / 500MB 的未 flush 流量 (自用可接受)
+const TRAFFIC_FLUSH_INTERVAL_MS = 24 * 60 * 60 * 1000;  // 24h 批量刷
+const TRAFFIC_FLUSH_SIZE_BYTES  = 500 * 1024 * 1024;    // 单用户 500MB 立即刷
+if (!globalThis._trafficMem) {
+  globalThis._trafficMem = {
+    buf: new Map(),                 // uuid -> { up, down, since }
+    lastFlushAt: Date.now(),
+    bootAt: Date.now(),
+  };
+}
+// 连接数/错误数指标 (供 /admin/metrics 读取)
+if (!globalThis._connMetrics) {
+  globalThis._connMetrics = { active: 0, total: 0, errors: 0, last_error: null };
+}
+
 async function flushConnectionTraffic(connState, env) {
+  // 防止 close/abort/catch 三重触发时重复 flush + 重复 active--
+  if (connState._ended) return;
+  connState._ended = true;
+  const m = globalThis._connMetrics;
+  if (m && m.active > 0) m.active--;
+
   if (!connState.user) return;
   const up = connState.upBytes, down = connState.downBytes;
   if (up === 0 && down === 0) return;
-  const total = up + down;
   const uuid = connState.user.uuid;
-  const now = new Date().toISOString();
+  const mem = globalThis._trafficMem;
+  const entry = mem.buf.get(uuid) || { up: 0, down: 0, since: Date.now() };
+  entry.up += up;
+  entry.down += down;
+  mem.buf.set(uuid, entry);
 
+  // 单用户累积 ≥ 500MB → 立即 flush (防止超额度后还没 flush 造成失控)
+  if (entry.up + entry.down >= TRAFFIC_FLUSH_SIZE_BYTES) {
+    await flushOneUser(uuid, env);
+    return;
+  }
+  // 距离上次批量 flush ≥ 24h → 全部 flush
+  if (Date.now() - mem.lastFlushAt >= TRAFFIC_FLUSH_INTERVAL_MS) {
+    await flushAllBuffered(env);
+  }
+}
+
+async function flushOneUser(uuid, env) {
+  const mem = globalThis._trafficMem;
+  const entry = mem.buf.get(uuid);
+  if (!entry) return { ok: true, skipped: 'empty' };
+  const up = entry.up, down = entry.down, total = up + down;
+  if (total === 0) { mem.buf.delete(uuid); return { ok: true, skipped: 'zero' }; }
+  // 先移出 buffer, 失败时回填
+  mem.buf.delete(uuid);
+  const now = new Date().toISOString();
   try {
     await env.DB
       .prepare(`UPDATE users
@@ -874,7 +938,6 @@ async function flushConnectionTraffic(connState, env) {
                     updated_at = ?
                 WHERE uuid = ?`)
       .bind(total, total, now, uuid).run();
-
     await env.DB
       .prepare(`INSERT INTO traffic_buffer (uuid, up_bytes, down_bytes, updated_at)
                 VALUES (?, ?, ?, ?)
@@ -883,11 +946,44 @@ async function flushConnectionTraffic(connState, env) {
                   down_bytes = down_bytes + excluded.down_bytes,
                   updated_at = excluded.updated_at`)
       .bind(uuid, up, down, now).run();
-
     await env.KV.delete('user:' + uuid);
+    return { ok: true, flushed: { uuid, up, down } };
   } catch (err) {
+    // D1 失败: 回填 buffer, 下次再试
+    const fb = mem.buf.get(uuid) || { up: 0, down: 0, since: Date.now() };
+    fb.up += up; fb.down += down;
+    mem.buf.set(uuid, fb);
+    globalThis._connMetrics.errors++;
+    globalThis._connMetrics.last_error = 'flush: ' + err.message;
     console.log('flush err', uuid, err.message);
+    return { ok: false, error: err.message };
   }
+}
+
+async function flushAllBuffered(env) {
+  const mem = globalThis._trafficMem;
+  mem.lastFlushAt = Date.now();
+  const uuids = [...mem.buf.keys()];
+  const results = [];
+  for (const uuid of uuids) {
+    results.push(await flushOneUser(uuid, env));
+  }
+  return { ok: true, count: results.length, results };
+}
+
+// 给 admin UI 返回查询时用: 把内存 buffer 合并进 user 记录, 让数字实时
+function enrichUserWithPending(user) {
+  if (!user) return user;
+  const mem = globalThis._trafficMem;
+  const p = mem && mem.buf.get(user.uuid);
+  if (!p) return user;
+  const pending = p.up + p.down;
+  return {
+    ...user,
+    daily_used_bytes: (user.daily_used_bytes || 0) + pending,
+    total_used_bytes: (user.total_used_bytes || 0) + pending,
+    _pending_bytes: pending,
+  };
 }
 
 // ========================================================================
@@ -1080,16 +1176,18 @@ async function handleSubscription(request, env, url) {
     const allowTrojan = outTrojan && (!nodeProtos || nodeProtos.includes('trojan'));
     const bothOut = allowVless && allowTrojan;
     if (allowVless) {
-      uris.push(`vless://${uuid}@${n.addr}:${n.port}?encryption=none&security=tls&type=ws&host=${wsHost}&path=${encodeURIComponent(wsPath)}&sni=${sni}#${encodeURIComponent(n.name + (bothOut ? '-vless' : ''))}`);
+      // fp=chrome: TLS 指纹伪装 chrome; alpn=h2,http/1.1: ALPN 协议协商
+      // ed=2048: Early Data 0-RTT, 首次握手省 1 个 RTT (~100-200ms)
+      uris.push(`vless://${uuid}@${n.addr}:${n.port}?encryption=none&security=tls&sni=${sni}&fp=chrome&alpn=h2,http%2F1.1&type=ws&host=${wsHost}&path=${encodeURIComponent(wsPath)}&ed=2048#${encodeURIComponent(n.name + (bothOut ? '-vless' : ''))}`);
     }
     if (allowTrojan) {
-      uris.push(`trojan://${uuid}@${n.addr}:${n.port}?security=tls&type=ws&host=${wsHost}&path=${encodeURIComponent(trojanPath)}&sni=${sni}#${encodeURIComponent(n.name + (bothOut ? '-trojan' : ''))}`);
+      uris.push(`trojan://${uuid}@${n.addr}:${n.port}?security=tls&sni=${sni}&fp=chrome&alpn=h2,http%2F1.1&type=ws&host=${wsHost}&path=${encodeURIComponent(trojanPath)}&ed=2048#${encodeURIComponent(n.name + (bothOut ? '-trojan' : ''))}`);
     }
   }
   if (uris.length === 0) {
     // 没协议启用 / 节点协议全过滤掉 => 至少给 vless 避免空订阅
     for (const n of nodes) {
-      uris.push(`vless://${uuid}@${n.addr}:${n.port}?encryption=none&security=tls&type=ws&host=${wsHost}&path=${encodeURIComponent(wsPath)}&sni=${sni}#${encodeURIComponent(n.name)}`);
+      uris.push(`vless://${uuid}@${n.addr}:${n.port}?encryption=none&security=tls&sni=${sni}&fp=chrome&alpn=h2,http%2F1.1&type=ws&host=${wsHost}&path=${encodeURIComponent(wsPath)}&ed=2048#${encodeURIComponent(n.name)}`);
     }
   }
 
@@ -1176,6 +1274,8 @@ function buildClashYaml(nodes, uuid, wsHost, wsPath, sni, groupName, protoOpts) 
       y.push(`      path: "${p.path}"`);
       y.push(`      headers:`);
       y.push(`        Host: ${p.wsHost}`);
+      y.push(`      early-data-header-name: Sec-WebSocket-Protocol`);
+      y.push(`      max-early-data: 2048`);
       y.push(`    udp: true`);
     } else { // trojan
       y.push(`    password: ${p.password}`);
@@ -1186,6 +1286,8 @@ function buildClashYaml(nodes, uuid, wsHost, wsPath, sni, groupName, protoOpts) 
       y.push(`      path: "${p.path}"`);
       y.push(`      headers:`);
       y.push(`        Host: ${p.wsHost}`);
+      y.push(`      early-data-header-name: Sec-WebSocket-Protocol`);
+      y.push(`      max-early-data: 2048`);
       y.push(`    udp: true`);
     }
   }
@@ -1223,7 +1325,7 @@ function buildSingBoxConfig(nodes, uuid, wsHost, wsPath, sni, protoOpts) {
         uuid,
         flow: '',
         tls: { enabled: true, server_name: sni, insecure: false },
-        transport: { type: 'ws', path: wsPath, headers: { Host: wsHost } },
+        transport: { type: 'ws', path: wsPath, headers: { Host: wsHost }, early_data_header_name: 'Sec-WebSocket-Protocol', max_early_data: 2048 },
       });
     }
     if (allowTrojan) {
@@ -1234,7 +1336,7 @@ function buildSingBoxConfig(nodes, uuid, wsHost, wsPath, sni, protoOpts) {
         server_port: n.port,
         password: uuid,
         tls: { enabled: true, server_name: sni, insecure: false },
-        transport: { type: 'ws', path: (opts.trojanPath || '/trojan'), headers: { Host: wsHost } },
+        transport: { type: 'ws', path: (opts.trojanPath || '/trojan'), headers: { Host: wsHost }, early_data_header_name: 'Sec-WebSocket-Protocol', max_early_data: 2048 },
       });
     }
   }
@@ -1245,7 +1347,7 @@ function buildSingBoxConfig(nodes, uuid, wsHost, wsPath, sni, protoOpts) {
         type: 'vless', tag: n.name,
         server: n.addr, server_port: n.port, uuid, flow: '',
         tls: { enabled: true, server_name: sni, insecure: false },
-        transport: { type: 'ws', path: wsPath, headers: { Host: wsHost } },
+        transport: { type: 'ws', path: wsPath, headers: { Host: wsHost }, early_data_header_name: 'Sec-WebSocket-Protocol', max_early_data: 2048 },
       });
     }
   }
@@ -1608,7 +1710,7 @@ async function handleAdmin(request, env, url, ctx) {
     const uuid = url.searchParams.get('uuid');
     if (!uuid) return json({ ok: false, error: 'missing uuid' }, 400);
     const row = await env.DB.prepare(`SELECT * FROM users WHERE uuid=?`).bind(uuid).first();
-    return json({ ok: true, user: row });
+    return json({ ok: true, user: enrichUserWithPending(row) });
   }
 
   if (url.pathname === '/admin/users' && request.method === 'GET') {
@@ -1617,7 +1719,40 @@ async function handleAdmin(request, env, url, ctx) {
               daily_quota_bytes, daily_used_bytes, expire_at
        FROM users ORDER BY updated_at DESC`
     ).all();
-    return json({ ok: true, users: rows.results });
+    return json({ ok: true, users: (rows.results || []).map(enrichUserWithPending) });
+  }
+
+  // ---------- 运维 endpoints ----------
+  // 手动强制 flush 内存 buffer → D1 (管理端"立即结算"按钮 或 外部 cron 用)
+  if (url.pathname === '/admin/flush-traffic' && request.method === 'POST') {
+    const uuid = url.searchParams.get('uuid');
+    if (uuid) {
+      const r = await flushOneUser(uuid, env);
+      return json(r);
+    }
+    const r = await flushAllBuffered(env);
+    return json(r);
+  }
+
+  // 运行指标: 连接数 / 待刷流量 / 错误 / isolate uptime
+  if (url.pathname === '/admin/metrics' && request.method === 'GET') {
+    const mem = globalThis._trafficMem || { buf: new Map(), lastFlushAt: 0, bootAt: Date.now() };
+    const conn = globalThis._connMetrics || { active: 0, total: 0, errors: 0, last_error: null };
+    let pendingBytes = 0;
+    for (const e of mem.buf.values()) pendingBytes += e.up + e.down;
+    return json({
+      ok: true,
+      isolate_uptime_sec: Math.floor((Date.now() - mem.bootAt) / 1000),
+      last_flush_at: mem.lastFlushAt ? new Date(mem.lastFlushAt).toISOString() : null,
+      next_auto_flush_in_sec: Math.max(0, Math.floor((mem.lastFlushAt + TRAFFIC_FLUSH_INTERVAL_MS - Date.now()) / 1000)),
+      pending_flush: { users: mem.buf.size, bytes: pendingBytes },
+      connections: {
+        active:  conn.active,
+        total:   conn.total,
+        errors:  conn.errors,
+        last_error: conn.last_error,
+      },
+    });
   }
 
   if (url.pathname === '/admin/user' && request.method === 'POST') {
@@ -1746,6 +1881,130 @@ async function handleAdmin(request, env, url, ctx) {
            new Date().toISOString(), uuid).run();
     await env.KV.delete('user:' + uuid);
     return json({ ok: true });
+  }
+
+  // --- 一键推荐配置: 把 settings 写成"开箱即用"的组合, 不覆盖用户自填的 ADDRESSES ---
+  if (url.pathname === '/admin/quick-setup' && request.method === 'POST') {
+    const recommended = {
+      ENABLED_PROTOCOLS: 'vless,trojan',
+      PROXYIP: 'cf.090227.xyz',
+      ADDAPI: [
+        'https://ipdb.api.030101.xyz/?type=bestcf [region=auto,tag=cf-pool]',
+        'https://ipdb.api.030101.xyz/?type=bestproxy [tag=proxy-pool]',
+        'https://ipdb.api.030101.xyz/?type=cfv4 [tag=cfv4]',
+      ].join('\n'),
+      NODE_NAME_PREFIX: 'xiaox',
+      WS_PATH: '/',
+      TROJAN_PATH: '/trojan',
+      NODE_FILTER: JSON.stringify({
+        regions: [], exclude_regions: [],
+        include_tags: [], exclude_tags: [],
+        max_per_region: 0, total_max: 40,
+      }),
+    };
+    try {
+      for (const [k, v] of Object.entries(recommended)) {
+        await setSetting(env, k, v);
+      }
+      return json({ ok: true, applied: Object.keys(recommended) });
+    } catch (e) {
+      return json({ ok: false, error: e.message }, 500);
+    }
+  }
+
+  // --- 节点健康度: 本地节点数 / 每个优选源 fetch 状态 / 筛后总数 / PROXYIP / 协议 ---
+  if (url.pathname === '/admin/node-health' && request.method === 'GET') {
+    try {
+      const settings = await getAllSettings(env);
+      const prefix = settings.NODE_NAME_PREFIX || 'node';
+
+      // 本地 ADDRESSES 节点数
+      const addrLines = (settings.ADDRESSES || '').split(/\r?\n/).map(s => s.trim()).filter(l => l && !l.startsWith('#'));
+      const localNodes = addrLines.map((line, i) => parseNodeLine(line, `${prefix}-${i+1}`, 'local')).filter(Boolean);
+
+      // 逐个测 ADDAPI 源 (独立 fetch, 不走缓存)
+      const sources = [];
+      const apiLines = (settings.ADDAPI || '').split(/\r?\n/).map(s => s.trim()).filter(l => l && !l.startsWith('#'));
+      for (const line of apiLines) {
+        let work = line;
+        const m = work.match(/^(.*?)\s*\[([^\]]*)\]\s*$/);
+        if (m) work = m[1].trim();
+        const urlStr = work;
+        const t0 = Date.now();
+        let status = 'ok', count = 0, errMsg = null;
+        try {
+          const controller = new AbortController();
+          const timer = setTimeout(() => controller.abort(), 8000);
+          const resp = await fetch(urlStr, { signal: controller.signal });
+          clearTimeout(timer);
+          if (!resp.ok) { status = 'fail'; errMsg = 'HTTP ' + resp.status; }
+          else {
+            const text = await resp.text();
+            count = text.split('\n').map(s => s.trim()).filter(l => l && !l.startsWith('#')).length;
+            if (count === 0) { status = 'empty'; }
+          }
+        } catch (e) { status = 'fail'; errMsg = e.name === 'AbortError' ? 'timeout 8s' : e.message; }
+        sources.push({ url: urlStr, status, count, latency_ms: Date.now() - t0, error: errMsg });
+      }
+
+      // ADDCSV
+      if (settings.ADDCSV) {
+        const t0 = Date.now();
+        let status = 'ok', count = 0, errMsg = null;
+        try {
+          const controller = new AbortController();
+          const timer = setTimeout(() => controller.abort(), 8000);
+          const resp = await fetch(settings.ADDCSV, { signal: controller.signal });
+          clearTimeout(timer);
+          if (!resp.ok) { status = 'fail'; errMsg = 'HTTP ' + resp.status; }
+          else {
+            const text = await resp.text();
+            count = text.split('\n').filter(l => /tls.*true/i.test(l)).length;
+            if (count === 0) { status = 'empty'; }
+          }
+        } catch (e) { status = 'fail'; errMsg = e.name === 'AbortError' ? 'timeout 8s' : e.message; }
+        sources.push({ url: settings.ADDCSV, type: 'csv', status, count, latency_ms: Date.now() - t0, error: errMsg });
+      }
+
+      // 完整合成池 + 筛后数
+      let totalPool = localNodes.length;
+      let filteredCount = 0;
+      try {
+        const optimized = await fetchOptimizedAddresses(env, settings);
+        totalPool = localNodes.length + optimized.length;
+        const all = [...localNodes, ...optimized];
+        const filter = parseNodeFilter(settings.NODE_FILTER);
+        filteredCount = applyNodeFilter(all, filter, {}).length;
+      } catch {}
+
+      // 诊断建议
+      const suggestions = [];
+      if (localNodes.length === 0 && apiLines.length === 0 && !settings.ADDCSV) {
+        suggestions.push('你还没有配任何节点源 — 点「一键推荐配置」自动启用 3 个公开优选源');
+      }
+      if (sources.filter(s => s.status === 'fail').length === sources.length && sources.length > 0) {
+        suggestions.push('所有优选源都 fetch 失败了 — 检查 Pages Functions 能否访问外网');
+      }
+      if (totalPool > 0 && filteredCount === 0) {
+        suggestions.push('合成池有 ' + totalPool + ' 个节点但筛后剩 0 — 检查订阅筛选规则是否太严');
+      }
+      if (!settings.PROXYIP) {
+        suggestions.push('未配 PROXYIP - CF 被墙时没兜底，推荐填 cf.090227.xyz');
+      }
+
+      return json({
+        ok: true,
+        local_nodes: localNodes.length,
+        sources,
+        total_pool: totalPool,
+        filtered_count: filteredCount,
+        proxyip: settings.PROXYIP || '',
+        protocols: (settings.ENABLED_PROTOCOLS || 'vless').split(/[,\s]+/).filter(Boolean),
+        suggestions,
+      });
+    } catch (e) {
+      return json({ ok: false, error: e.message }, 500);
+    }
   }
 
   // --- 聚合当前节点池可用的 tag / region (UI 从这里拿数据做 chip) ---
@@ -2054,8 +2313,19 @@ code { background: #f3f4f6; padding: 1px 5px; border-radius: 3px; font-size: 12p
 
     <div class="stat">
       <div><div class="v" id="s-users">—</div><div class="l">启用用户</div></div>
-      <div><div class="v" id="s-pending">—</div><div class="l">待上报流量条数</div></div>
-      <div><div class="v" id="s-sync">—</div><div class="l">模式</div></div>
+      <div><div class="v" id="s-pool">—</div><div class="l">节点池 / 筛后</div></div>
+      <div><div class="v" id="s-active">—</div><div class="l">活跃连接</div></div>
+    </div>
+
+    <div class="card" id="health-card" style="display:none">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+        <h2 style="margin:0">节点健康</h2>
+        <div style="display:flex;gap:6px">
+          <button class="ghost small" id="health-refresh">刷新</button>
+          <button class="small" id="health-quick-setup">⚡ 一键推荐配置</button>
+        </div>
+      </div>
+      <div id="health-body"></div>
     </div>
 
     <div class="tabs">
@@ -2164,30 +2434,36 @@ code { background: #f3f4f6; padding: 1px 5px; border-radius: 3px; font-size: 12p
             <div class="hint">勾选启用就会参与合成池。KV 缓存 10 分钟。地区/标签是给这批节点打的默认属性，方便后面筛。</div>
           </div>
 
-          <label>优选IP CSV (ADDCSV)</label>
-          <div>
-            <input id="st-ADDCSV" placeholder="https://example.com/result.csv  (留空不启用)">
-            <div class="hint">iptest 格式 CSV（表头 <code>ip,port,tls,colo,...</code>），只取 <code>tls=TRUE</code> 的行。自动按 <code>colo</code> 字段推断地区（LAX→us, HKG→hk, NRT→jp...），并加 <code>colo-XXX</code> 标签。</div>
-          </div>
-
-          <label>节点名前缀</label>
-          <div>
-            <input id="st-NODE_NAME_PREFIX" placeholder="xiaox">
-            <div class="hint">如果某行没写 <code>#备注</code>，就用这个前缀自动命名（xiaox-1、xiaox-2...）。</div>
-          </div>
-
-          <label>VLESS WS 路径</label>
-          <div>
-            <input id="st-WS_PATH" placeholder="/">
-            <div class="hint">VLESS 协议走的 WebSocket path。默认 <code>/</code>。想增加隐蔽度可改 <code>/api</code> <code>/xxx</code>。改了要所有订阅重新拉一次。</div>
-          </div>
-
-          <label>SOCKS5 (预留)</label>
-          <div>
-            <input id="st-SOCKS5" placeholder="user:pass@host:port" disabled>
-            <div class="hint">上游 SOCKS5 代理，MVP 阶段未接入，留空即可。</div>
-          </div>
         </div>
+
+        <details style="margin-top:18px;padding-top:16px;border-top:1px solid #f3f4f6">
+          <summary style="cursor:pointer;color:#6b7280;font-size:13px;font-weight:500;user-select:none">⚙ 高级设置 (不用动也能跑)</summary>
+          <div class="kv" style="margin-top:14px">
+            <label>优选IP CSV (ADDCSV)</label>
+            <div>
+              <input id="st-ADDCSV" placeholder="https://example.com/result.csv  (留空不启用)">
+              <div class="hint">iptest 格式 CSV（表头 <code>ip,port,tls,colo,...</code>），只取 <code>tls=TRUE</code> 的行。自动按 <code>colo</code> 推断地区并加 <code>colo-XXX</code> 标签。</div>
+            </div>
+
+            <label>节点名前缀</label>
+            <div>
+              <input id="st-NODE_NAME_PREFIX" placeholder="xiaox">
+              <div class="hint">没写 <code>#备注</code> 时自动命名。</div>
+            </div>
+
+            <label>VLESS WS 路径</label>
+            <div>
+              <input id="st-WS_PATH" placeholder="/">
+              <div class="hint">VLESS 协议的 WebSocket path。默认 <code>/</code>，改了所有客户端要重拉订阅。</div>
+            </div>
+
+            <label>SOCKS5 (预留)</label>
+            <div>
+              <input id="st-SOCKS5" placeholder="user:pass@host:port" disabled>
+              <div class="hint">上游 SOCKS5，MVP 阶段未接入。</div>
+            </div>
+          </div>
+        </details>
 
         <div style="margin-top:20px;display:flex;justify-content:flex-end;gap:8px">
           <button class="ghost" id="st-reload">重新读取</button>
@@ -2445,12 +2721,71 @@ $('#token-input').onkeydown = e => { if (e.key === 'Enter') $('#login-btn').clic
 $('#logout-btn').onclick = () => { localStorage.removeItem('admin_token'); token = ''; showLogin(); };
 $('#refresh-btn').onclick = () => refresh();
 
+// --- 节点健康卡片 ---
+async function loadHealth() {
+  const h = await api('/admin/node-health');
+  const box = $('#health-body');
+  const card = $('#health-card');
+  card.style.display = 'block';
+
+  // 顶部统计: 节点池 / 筛后
+  $('#s-pool').textContent = \`\${h.total_pool} / \${h.filtered_count}\`;
+
+  // 源状态
+  const srcRows = (h.sources || []).map(s => {
+    const icon = s.status === 'ok' ? '✓' : s.status === 'empty' ? '○' : '✗';
+    const color = s.status === 'ok' ? '#047857' : s.status === 'empty' ? '#b45309' : '#b91c1c';
+    const bg = s.status === 'ok' ? '#ecfdf5' : s.status === 'empty' ? '#fffbeb' : '#fef2f2';
+    const shortUrl = s.url.length > 60 ? s.url.slice(0, 58) + '…' : s.url;
+    const tail = s.status === 'fail' ? \`<span style="color:#b91c1c">\${s.error || ''}</span>\`
+               : s.status === 'empty' ? \`<span style="color:#b45309">返回空</span>\`
+               : \`<b style="color:#111">\${s.count}</b> 个节点\`;
+    return \`<div style="display:flex;align-items:center;gap:10px;padding:8px 10px;background:\${bg};border-radius:6px;margin-bottom:4px;font-size:12px">
+      <span style="color:\${color};font-weight:700;width:14px">\${icon}</span>
+      <span style="flex:1;color:#374151;font-family:ui-monospace,Menlo,monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">\${shortUrl}</span>
+      <span style="color:#6b7280">\${s.latency_ms}ms</span>
+      <span>\${tail}</span>
+    </div>\`;
+  }).join('');
+
+  const suggestions = (h.suggestions || []).map(s =>
+    \`<div style="padding:8px 12px;background:#fffbeb;border:1px solid #fde68a;border-radius:6px;color:#92400e;font-size:12px;margin-bottom:6px">💡 \${s}</div>\`
+  ).join('');
+
+  box.innerHTML = \`
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin-bottom:14px">
+      <div style="padding:10px 12px;border:1px solid #e5e7eb;border-radius:8px"><div style="font-size:11px;color:#6b7280">本地节点</div><div style="font-size:18px;font-weight:600">\${h.local_nodes}</div></div>
+      <div style="padding:10px 12px;border:1px solid #e5e7eb;border-radius:8px"><div style="font-size:11px;color:#6b7280">总合成池</div><div style="font-size:18px;font-weight:600">\${h.total_pool}</div></div>
+      <div style="padding:10px 12px;border:1px solid #e5e7eb;border-radius:8px"><div style="font-size:11px;color:#6b7280">筛后节点</div><div style="font-size:18px;font-weight:600;color:#2563eb">\${h.filtered_count}</div></div>
+      <div style="padding:10px 12px;border:1px solid #e5e7eb;border-radius:8px"><div style="font-size:11px;color:#6b7280">启用协议</div><div style="font-size:14px;font-weight:600">\${(h.protocols||[]).map(p=>p.toUpperCase()).join(' + ') || '—'}</div></div>
+      <div style="padding:10px 12px;border:1px solid #e5e7eb;border-radius:8px"><div style="font-size:11px;color:#6b7280">反代IP</div><div style="font-size:13px;font-weight:500;font-family:ui-monospace,Menlo,monospace">\${h.proxyip || '<span style=\\"color:#b91c1c\\">未配</span>'}</div></div>
+    </div>
+    \${suggestions ? '<div style="margin-bottom:12px">' + suggestions + '</div>' : ''}
+    \${srcRows ? '<h3 style="margin:0 0 6px 0;font-size:12px;color:#6b7280;text-transform:uppercase;letter-spacing:.04em">优选源状态</h3>' + srcRows : '<div class="hint">还没配优选源，点右上「一键推荐配置」</div>'}
+  \`;
+}
+$('#health-refresh').onclick = () => loadHealth().catch(e => toast('刷新失败: ' + e.message));
+$('#health-quick-setup').onclick = async () => {
+  if (!confirm('将把推荐配置覆盖到当前设置（不会动你已填的节点地址列表）：\\n• 启用 VLESS + Trojan 双协议\\n• PROXYIP = cf.090227.xyz\\n• 启用 3 个公开优选源 (ipdb bestcf/bestproxy/cfv4)\\n• 订阅筛选重置为 total_max=40\\n\\n继续？')) return;
+  try {
+    const r = await api('/admin/quick-setup', { method: 'POST' });
+    toast('✓ 已应用推荐配置，60 秒内生效');
+    await loadHealth();
+    await loadSettings();  // 重新读设置面板数据
+  } catch (e) { toast('失败: ' + e.message); }
+};
+
 async function refresh() {
   try {
     const [h, u] = await Promise.all([api('/admin/health'), api('/admin/users')]);
     $('#s-users').textContent = h.users_enabled ?? 0;
-    $('#s-pending').textContent = h.traffic_buffer_pending ?? 0;
-    $('#s-sync').textContent = h.panel_configured ? '面板模式' : '本地模式';
+    // 运行指标 (活跃连接)
+    try {
+      const m = await api('/admin/metrics');
+      $('#s-active').textContent = m.connections?.active ?? 0;
+    } catch { $('#s-active').textContent = '—'; }
+    // 节点健康卡片
+    try { await loadHealth(); } catch { }
     renderUsers(u.users || []);
   } catch (e) {}
 }
@@ -2554,7 +2889,7 @@ function showSubModal(uuid, email) {
   currentSubUuid = uuid;
   const host = location.host;
   const remark = encodeURIComponent((email || 'node') + '@' + host.split('.')[0]);
-  const vless = \`vless://\${uuid}@\${host}:443?encryption=none&security=tls&type=ws&host=\${host}&path=%2F&sni=\${host}#\${remark}\`;
+  const vless = \`vless://\${uuid}@\${host}:443?encryption=none&security=tls&sni=\${host}&fp=chrome&alpn=h2,http%2F1.1&type=ws&host=\${host}&path=%2F&ed=2048#\${remark}\`;
   const base = \`\${location.origin}/sub/\${uuid}\`;
   const page = \`\${location.origin}/p/\${uuid}\`;
   $('#sub-page').value = page;
@@ -2578,7 +2913,7 @@ $('#trojan-copy').onclick      = async () => {
     const s = r.settings || {};
     const trojanPath = s.TROJAN_PATH || '/trojan';
     const host = location.host;
-    const uri = \`trojan://\${currentSubUuid}@\${host}:443?security=tls&type=ws&host=\${host}&path=\${encodeURIComponent(trojanPath)}&sni=\${host}#\${encodeURIComponent(host.split('.')[0] + '-trojan')}\`;
+    const uri = \`trojan://\${currentSubUuid}@\${host}:443?security=tls&sni=\${host}&fp=chrome&alpn=h2,http%2F1.1&type=ws&host=\${host}&path=\${encodeURIComponent(trojanPath)}&ed=2048#\${encodeURIComponent(host.split('.')[0] + '-trojan')}\`;
     navigator.clipboard.writeText(uri);
     toast('已复制 Trojan 链接');
   } catch (e) { toast('读取配置失败'); }
