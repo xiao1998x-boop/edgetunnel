@@ -1851,141 +1851,187 @@ const ADMIN_HTML = `<!doctype html>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>节点管理</title>
 <style>
+/* ======================================================
+   白色极简风 (Stripe / Linear / Vercel 风格)
+   规则: 白底 / 黑主色按钮 / 细边框代替阴影 / 克制强调
+   ====================================================== */
 * { box-sizing: border-box; margin: 0; padding: 0; }
-body { font-family: -apple-system, "Segoe UI", Roboto, "PingFang SC", sans-serif;
-       background: #0f1117; color: #e6e6e6; font-size: 14px; min-height: 100vh; }
-.wrap { max-width: 1100px; margin: 0 auto; padding: 24px 20px; }
-.card { background: #1a1d26; border: 1px solid #262a35; border-radius: 10px; padding: 20px; margin-bottom: 16px; }
-h1 { font-size: 20px; margin-bottom: 16px; }
-h2 { font-size: 16px; margin-bottom: 12px; color: #9aa0a6; font-weight: 500; }
-button { background: #3b82f6; color: #fff; border: 0; padding: 8px 16px; border-radius: 6px;
-         cursor: pointer; font-size: 13px; font-weight: 500; }
-button:hover { background: #2563eb; }
-button.ghost { background: transparent; color: #9aa0a6; border: 1px solid #2a2e3a; }
-button.ghost:hover { background: #262a35; color: #e6e6e6; }
-button.danger { background: #ef4444; }
-button.danger:hover { background: #dc2626; }
-button.small { padding: 4px 10px; font-size: 12px; }
-input, select { background: #0f1117; color: #e6e6e6; border: 1px solid #2a2e3a;
-                padding: 8px 10px; border-radius: 6px; font-size: 13px; width: 100%; font-family: inherit; }
-input:focus { outline: none; border-color: #3b82f6; }
-label { display: block; margin-bottom: 6px; color: #9aa0a6; font-size: 12px; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", sans-serif;
+       background: #ffffff; color: #111827; font-size: 14px; min-height: 100vh;
+       -webkit-font-smoothing: antialiased; }
+.wrap { max-width: 1100px; margin: 0 auto; padding: 32px 24px; }
+
+.card { background: #ffffff; border: 1px solid #e5e7eb; border-radius: 12px; padding: 24px; margin-bottom: 16px; }
+
+h1 { font-size: 22px; font-weight: 600; letter-spacing: -0.01em; margin-bottom: 16px; color: #111827; }
+h2 { font-size: 15px; font-weight: 600; margin-bottom: 6px; color: #111827; }
+h3 { font-size: 13px; font-weight: 600; color: #374151; }
+
+button { background: #111827; color: #ffffff; border: 0; padding: 8px 16px; border-radius: 6px;
+         cursor: pointer; font-size: 13px; font-weight: 500; transition: background .15s; font-family: inherit; }
+button:hover { background: #1f2937; }
+button.ghost { background: #ffffff; color: #374151; border: 1px solid #e5e7eb; }
+button.ghost:hover { background: #f9fafb; border-color: #d1d5db; }
+button.danger { background: #dc2626; color: #ffffff; }
+button.danger:hover { background: #b91c1c; }
+button.small { padding: 5px 10px; font-size: 12px; }
+
+input, select { background: #ffffff; color: #111827; border: 1px solid #e5e7eb;
+                padding: 8px 12px; border-radius: 6px; font-size: 13px; width: 100%; font-family: inherit;
+                transition: border-color .15s, box-shadow .15s; }
+input:focus, select:focus { outline: none; border-color: #111827; box-shadow: 0 0 0 3px rgba(17,24,39,.08); }
+input::placeholder { color: #9ca3af; }
+
+label { display: block; margin-bottom: 6px; color: #374151; font-size: 12px; font-weight: 500; }
 .row { display: flex; gap: 12px; flex-wrap: wrap; }
 .row > * { flex: 1; min-width: 150px; }
+
 table { width: 100%; border-collapse: collapse; }
-th, td { text-align: left; padding: 10px 8px; border-bottom: 1px solid #262a35; font-size: 13px; }
-th { color: #9aa0a6; font-weight: 500; font-size: 12px; text-transform: uppercase; }
+th, td { text-align: left; padding: 12px 10px; border-bottom: 1px solid #f3f4f6; font-size: 13px; }
+th { color: #6b7280; font-weight: 500; font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em;
+     background: #fafafa; border-bottom-color: #e5e7eb; }
 td.actions { white-space: nowrap; }
 td.actions button { margin-right: 4px; }
-.badge { display: inline-block; padding: 2px 8px; border-radius: 3px; font-size: 11px; font-weight: 500; }
-.badge.ok { background: #064e3b; color: #6ee7b7; }
-.badge.warn { background: #78350f; color: #fcd34d; }
-.badge.err { background: #7f1d1d; color: #fca5a5; }
-.bar { background: #262a35; height: 4px; border-radius: 2px; overflow: hidden; margin-top: 3px; }
-.bar-fill { height: 100%; background: #3b82f6; transition: width .2s; }
+
+.badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 500; }
+.badge.ok   { background: #ecfdf5; color: #047857; }
+.badge.warn { background: #fffbeb; color: #b45309; }
+.badge.err  { background: #fef2f2; color: #b91c1c; }
+
+.bar { background: #f3f4f6; height: 4px; border-radius: 2px; overflow: hidden; margin-top: 4px; }
+.bar-fill { height: 100%; background: #111827; transition: width .2s; }
 .bar-fill.warn { background: #f59e0b; }
-.bar-fill.err { background: #ef4444; }
+.bar-fill.err  { background: #dc2626; }
+
 .muted { color: #6b7280; font-size: 12px; }
-.stat { display: flex; gap: 20px; margin-bottom: 16px; }
-.stat > div { flex: 1; background: #1a1d26; border: 1px solid #262a35; border-radius: 10px; padding: 16px; }
-.stat .v { font-size: 22px; font-weight: 600; }
-.stat .l { font-size: 12px; color: #9aa0a6; margin-top: 4px; }
-.modal { position: fixed; inset: 0; background: rgba(0,0,0,.7); display: none;
+
+.stat { display: flex; gap: 16px; margin-bottom: 16px; }
+.stat > div { flex: 1; background: #ffffff; border: 1px solid #e5e7eb; border-radius: 12px; padding: 18px 20px; }
+.stat .v { font-size: 24px; font-weight: 600; color: #111827; letter-spacing: -0.01em; }
+.stat .l { font-size: 12px; color: #6b7280; margin-top: 2px; }
+
+.modal { position: fixed; inset: 0; background: rgba(17,24,39,.4); display: none; backdrop-filter: blur(2px);
          align-items: center; justify-content: center; z-index: 10; padding: 20px; }
 .modal.show { display: flex; }
-.modal-inner { background: #1a1d26; border: 1px solid #262a35; border-radius: 10px;
-               padding: 24px; width: 100%; max-width: 480px; }
-.toast { position: fixed; bottom: 24px; right: 24px; background: #1a1d26;
-         border: 1px solid #3b82f6; padding: 12px 16px; border-radius: 8px; z-index: 20;
-         transform: translateY(100px); opacity: 0; transition: all .25s; }
-.toast.show { transform: translateY(0); opacity: 1; }
-.preset { display: flex; gap: 8px; margin-bottom: 14px; flex-wrap: wrap; }
-.preset button { background: #262a35; color: #e6e6e6; }
-.preset button:hover { background: #3b82f6; }
-#login-screen { max-width: 360px; margin: 80px auto; }
-.tabs { display: flex; gap: 4px; border-bottom: 1px solid #262a35; margin-bottom: 16px; }
-.tabs button { background: transparent; color: #9aa0a6; border: 0; padding: 10px 16px; border-radius: 0;
-               border-bottom: 2px solid transparent; font-size: 14px; }
-.tabs button.active { color: #e6e6e6; border-bottom-color: #3b82f6; background: transparent; }
-textarea { background: #0f1117; color: #e6e6e6; border: 1px solid #2a2e3a;
-           padding: 8px 10px; border-radius: 6px; font-size: 13px; width: 100%; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; resize: vertical; min-height: 140px; }
-textarea:focus { outline: none; border-color: #3b82f6; }
-.hint { font-size: 12px; color: #6b7280; margin-top: 4px; line-height: 1.5; }
-.kv { display: grid; grid-template-columns: 140px 1fr; gap: 10px 14px; align-items: start; }
-.kv label { line-height: 34px; margin: 0; }
+.modal-inner { background: #ffffff; border: 1px solid #e5e7eb; border-radius: 12px;
+               padding: 24px; width: 100%; max-width: 480px; box-shadow: 0 20px 40px rgba(0,0,0,.08); }
 
-/* ------- 点选卡片: 套餐预设 ------- */
+.toast { position: fixed; bottom: 24px; right: 24px; background: #111827; color: #ffffff;
+         padding: 12px 18px; border-radius: 8px; z-index: 20; font-size: 13px; font-weight: 500;
+         transform: translateY(100px); opacity: 0; transition: all .25s; box-shadow: 0 10px 30px rgba(0,0,0,.15); }
+.toast.show { transform: translateY(0); opacity: 1; }
+
+.preset { display: flex; gap: 8px; margin-bottom: 14px; flex-wrap: wrap; }
+.preset button { background: #f9fafb; color: #111827; border: 1px solid #e5e7eb; }
+.preset button:hover { background: #f3f4f6; border-color: #d1d5db; }
+
+#login-screen { max-width: 360px; margin: 120px auto; }
+
+.tabs { display: flex; gap: 4px; border-bottom: 1px solid #e5e7eb; margin-bottom: 20px; }
+.tabs button { background: transparent; color: #6b7280; border: 0; padding: 10px 16px; border-radius: 0;
+               border-bottom: 2px solid transparent; font-size: 14px; font-weight: 500; }
+.tabs button:hover { background: transparent; color: #111827; }
+.tabs button.active { color: #111827; border-bottom-color: #111827; background: transparent; }
+
+textarea { background: #ffffff; color: #111827; border: 1px solid #e5e7eb;
+           padding: 10px 12px; border-radius: 6px; font-size: 13px; width: 100%;
+           font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+           resize: vertical; min-height: 140px; line-height: 1.5; }
+textarea:focus { outline: none; border-color: #111827; box-shadow: 0 0 0 3px rgba(17,24,39,.08); }
+
+.hint { font-size: 12px; color: #6b7280; margin-top: 4px; line-height: 1.6; }
+.hint code { background: #f3f4f6; padding: 1px 5px; border-radius: 3px; font-size: 11.5px; color: #374151; }
+.hint a { color: #2563eb; }
+
+.kv { display: grid; grid-template-columns: 140px 1fr; gap: 14px 16px; align-items: start; }
+.kv label { line-height: 36px; margin: 0; font-weight: 500; }
+
+/* ------- 套餐卡片 ------- */
 .plan-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; margin-bottom: 16px; }
-.plan-card { background: #0f1117; border: 2px solid #2a2e3a; border-radius: 10px; padding: 14px 12px;
+.plan-card { background: #ffffff; border: 1px solid #e5e7eb; border-radius: 10px; padding: 16px 12px;
              cursor: pointer; transition: all .15s; text-align: center; }
-.plan-card:hover { border-color: #3b82f6; background: #131724; }
-.plan-card.active { border-color: #3b82f6; background: #172033; box-shadow: 0 0 0 2px rgba(59,130,246,.15); }
-.plan-card .pt { font-size: 14px; font-weight: 600; color: #e6e6e6; }
-.plan-card .pv { font-size: 18px; font-weight: 700; color: #7fb3ff; margin: 6px 0; }
+.plan-card:hover { border-color: #9ca3af; }
+.plan-card.active { border-color: #111827; border-width: 2px; padding: 15px 11px; background: #fafafa; }
+.plan-card .pt { font-size: 14px; font-weight: 600; color: #111827; }
+.plan-card .pv { font-size: 18px; font-weight: 700; color: #111827; margin: 6px 0; letter-spacing: -0.02em; }
 .plan-card .ps { font-size: 11px; color: #6b7280; }
 
-/* ------- Chip: 地区/标签可点选 ------- */
-.chips { display: flex; flex-wrap: wrap; gap: 6px; padding: 6px 0; }
-.chip { display: inline-flex; align-items: center; gap: 4px; background: #0f1117; border: 1px solid #2a2e3a;
-        padding: 4px 10px; border-radius: 20px; font-size: 12px; color: #9aa0a6; cursor: pointer;
-        user-select: none; transition: all .15s; }
-.chip:hover { border-color: #3b82f6; color: #e6e6e6; }
-.chip.active { background: #172033; border-color: #3b82f6; color: #7fb3ff; font-weight: 500; }
-.chip.neg { border-color: #7f1d1d; color: #fca5a5; }
-.chip.neg.active { background: #3d1111; border-color: #ef4444; color: #fca5a5; }
-.chip .cnt { font-size: 10px; color: #6b7280; font-weight: 400; }
+/* ------- 可点选 Chip ------- */
+.chips { display: flex; flex-wrap: wrap; gap: 6px; padding: 4px 0; }
+.chip { display: inline-flex; align-items: center; gap: 4px; background: #ffffff; border: 1px solid #e5e7eb;
+        padding: 5px 12px; border-radius: 20px; font-size: 12px; color: #374151; cursor: pointer;
+        user-select: none; transition: all .15s; font-weight: 500; }
+.chip:hover { border-color: #111827; color: #111827; }
+.chip.active { background: #111827; border-color: #111827; color: #ffffff; }
+.chip.neg { color: #991b1b; }
+.chip.neg:hover { border-color: #dc2626; color: #dc2626; }
+.chip.neg.active { background: #dc2626; border-color: #dc2626; color: #ffffff; }
+.chip .cnt { font-size: 10px; color: #9ca3af; font-weight: 400; }
+.chip.active .cnt { color: rgba(255,255,255,.6); }
 
-/* ------- 节点表格 ------- */
-.node-tbl { width: 100%; border-collapse: separate; border-spacing: 0 4px; }
-.node-tbl th { padding: 4px 6px; font-size: 11px; color: #6b7280; text-transform: none; }
-.node-tbl td { padding: 0; border: 0; background: transparent; }
-.node-tbl td input, .node-tbl td select { padding: 6px 8px; font-size: 12px; background: #0f1117; }
-.node-tbl tr.node-row td:first-child input { border-radius: 6px 0 0 6px; }
-.node-tbl tr.node-row td:last-child  { padding-left: 4px; }
-.node-tbl .proto-cell { display: flex; gap: 8px; font-size: 11px; background: #0f1117;
-                        padding: 5px 8px; border: 1px solid #2a2e3a; border-radius: 6px; }
-.node-tbl .proto-cell label { display: flex; align-items: center; gap: 3px; margin: 0; font-size: 11px; color: #9aa0a6; cursor: pointer; }
-.node-tbl .del-btn { background: transparent; border: 1px solid #3a1f2a; color: #ef4444; padding: 6px 8px; border-radius: 6px; font-size: 11px; }
-.node-tbl .del-btn:hover { background: #3a1f2a; }
-.node-tbl .src-badge { font-size: 10px; color: #6b7280; padding: 2px 6px; border: 1px solid #262a35; border-radius: 3px; }
+/* ------- 节点编辑表格 ------- */
+.node-tbl { width: 100%; border-collapse: separate; border-spacing: 0 6px; }
+.node-tbl th { padding: 4px 6px; font-size: 11px; color: #6b7280; text-transform: none;
+               background: transparent; border: 0; letter-spacing: 0; font-weight: 500; }
+.node-tbl td { padding: 0 3px; border: 0; background: transparent; }
+.node-tbl td input, .node-tbl td select {
+  padding: 7px 8px; font-size: 12px; background: #ffffff; border-color: #e5e7eb;
+}
+.node-tbl .proto-cell { display: flex; gap: 10px; font-size: 11px; background: #ffffff;
+                        padding: 6px 10px; border: 1px solid #e5e7eb; border-radius: 6px; }
+.node-tbl .proto-cell label { display: flex; align-items: center; gap: 4px; margin: 0;
+                              font-size: 11.5px; color: #374151; cursor: pointer; font-weight: 500; line-height: 1; }
+.node-tbl .del-btn { background: #ffffff; border: 1px solid #e5e7eb; color: #dc2626;
+                     padding: 7px 10px; border-radius: 6px; font-size: 11px; font-weight: 500; }
+.node-tbl .del-btn:hover { background: #fef2f2; border-color: #fca5a5; }
 
-/* ------- 优选源清单 ------- */
+/* ------- 优选 IP 源清单 ------- */
 .src-list { display: flex; flex-direction: column; gap: 8px; }
-.src-item { display: grid; grid-template-columns: 40px 1fr 110px 140px 28px; gap: 8px; align-items: center;
-            background: #0f1117; border: 1px solid #2a2e3a; padding: 10px; border-radius: 8px; }
-.src-item.off { opacity: .5; }
+.src-item { display: grid; grid-template-columns: 50px 1fr 110px 140px 34px; gap: 10px; align-items: center;
+            background: #ffffff; border: 1px solid #e5e7eb; padding: 12px 14px; border-radius: 8px; transition: border-color .15s; }
+.src-item:hover { border-color: #d1d5db; }
+.src-item.off { opacity: .55; }
 .src-item input, .src-item select { padding: 6px 8px; font-size: 12px; }
 .src-item .sw { display: flex; justify-content: center; }
-.src-item .name-row { display: flex; flex-direction: column; gap: 2px; }
-.src-item .name-row .n { font-size: 13px; font-weight: 500; color: #e6e6e6; }
-.src-item .name-row .u { font-size: 10px; color: #6b7280; font-family: ui-monospace, Menlo, monospace;
+.src-item .name-row { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.src-item .name-row .n { font-size: 13px; font-weight: 600; color: #111827; }
+.src-item .name-row .u { font-size: 11px; color: #6b7280; font-family: ui-monospace, Menlo, monospace;
                          overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.sw-input { position: relative; width: 36px; height: 20px; cursor: pointer; appearance: none; background: #2a2e3a;
-            border-radius: 10px; transition: .2s; border: 0; padding: 0; }
+
+/* 开关 (iOS 风格) */
+.sw-input { position: relative; width: 36px; height: 20px; cursor: pointer; appearance: none; background: #e5e7eb;
+            border-radius: 10px; transition: .2s; border: 0; padding: 0; margin: 0; }
 .sw-input::after { content: ''; position: absolute; left: 2px; top: 2px; width: 16px; height: 16px;
-                   background: #fff; border-radius: 50%; transition: .2s; }
-.sw-input:checked { background: #3b82f6; }
+                   background: #ffffff; border-radius: 50%; transition: .2s;
+                   box-shadow: 0 1px 3px rgba(0,0,0,.2); }
+.sw-input:checked { background: #111827; }
 .sw-input:checked::after { left: 18px; }
 
 /* ------- 数量限制按钮组 ------- */
 .btn-group { display: inline-flex; gap: 4px; }
-.btn-group button { background: #0f1117; border: 1px solid #2a2e3a; color: #9aa0a6;
-                    padding: 6px 12px; font-size: 12px; border-radius: 6px; font-weight: 500; }
-.btn-group button:hover { border-color: #3b82f6; color: #e6e6e6; }
-.btn-group button.active { background: #172033; border-color: #3b82f6; color: #7fb3ff; }
+.btn-group button { background: #ffffff; border: 1px solid #e5e7eb; color: #374151;
+                    padding: 6px 14px; font-size: 12px; border-radius: 6px; font-weight: 500; }
+.btn-group button:hover { background: #f9fafb; border-color: #d1d5db; color: #111827; }
+.btn-group button.active { background: #111827; border-color: #111827; color: #ffffff; }
 
-/* ------- 操作下拉菜单 ------- */
+/* ------- 操作行下拉菜单 ------- */
 .action-wrap { position: relative; display: inline-block; }
-.action-menu { position: absolute; right: 0; top: calc(100% + 4px); background: #1a1d26; border: 1px solid #2a2e3a;
-               border-radius: 8px; min-width: 170px; z-index: 30; padding: 4px; box-shadow: 0 8px 24px rgba(0,0,0,.4);
-               display: none; }
+.action-menu { position: absolute; right: 0; top: calc(100% + 4px); background: #ffffff; border: 1px solid #e5e7eb;
+               border-radius: 8px; min-width: 180px; z-index: 30; padding: 4px;
+               box-shadow: 0 12px 28px rgba(17,24,39,.12); display: none; }
 .action-menu.show { display: block; }
-.action-menu button { display: block; width: 100%; text-align: left; background: transparent; color: #e6e6e6;
-                      padding: 8px 12px; border-radius: 4px; font-size: 12px; font-weight: 400; }
-.action-menu button:hover { background: #262a35; }
-.action-menu button.danger-item { color: #fca5a5; }
-.action-menu button.danger-item:hover { background: #3a1f2a; }
-.action-menu hr { border: 0; border-top: 1px solid #262a35; margin: 4px 0; }
+.action-menu button { display: block; width: 100%; text-align: left; background: transparent; color: #374151;
+                      padding: 8px 12px; border-radius: 4px; font-size: 12.5px; font-weight: 500; }
+.action-menu button:hover { background: #f3f4f6; color: #111827; }
+.action-menu button.danger-item { color: #dc2626; }
+.action-menu button.danger-item:hover { background: #fef2f2; color: #b91c1c; }
+.action-menu hr { border: 0; border-top: 1px solid #f3f4f6; margin: 4px 0; }
+
+/* ------- URL box (订阅链接等 readonly input) ------- */
+.url-box { background: #fafafa; border: 1px solid #e5e7eb; color: #111827; font-family: ui-monospace, Menlo, monospace; }
+
+code { background: #f3f4f6; padding: 1px 5px; border-radius: 3px; font-size: 12px; color: #374151;
+       font-family: ui-monospace, Menlo, monospace; }
 </style>
 </head>
 <body>
@@ -2089,14 +2135,14 @@ textarea:focus { outline: none; border-color: #3b82f6; }
               <div style="display:flex;gap:8px;margin-top:8px;align-items:center">
                 <button class="small ghost" id="nodes-add">+ 添加一行</button>
                 <button class="small ghost" id="nodes-add-preset">+ 常用节点模板</button>
-                <span class="hint" style="margin:0 0 0 auto">高级: <a href="#" id="nodes-toggle-text" style="color:#7fb3ff;text-decoration:none">切到文本编辑</a></span>
+                <span class="hint" style="margin:0 0 0 auto">高级: <a href="#" id="nodes-toggle-text" style="color:#2563eb;text-decoration:none">切到文本编辑</a></span>
               </div>
             </div>
             <!-- 文本 UI (隐藏备用) -->
             <div id="nodes-text" style="display:none">
               <textarea id="st-ADDRESSES"></textarea>
               <div style="display:flex;justify-content:flex-end;margin-top:6px">
-                <a href="#" id="nodes-toggle-ui" style="color:#7fb3ff;text-decoration:none;font-size:12px">← 切回表格编辑</a>
+                <a href="#" id="nodes-toggle-ui" style="color:#2563eb;text-decoration:none;font-size:12px">← 切回表格编辑</a>
               </div>
             </div>
             <div class="hint">每行一个节点，地区/标签/协议都用下拉选择，不用手写语法。留空就是默认，会参与「订阅筛选」时的全局池。</div>
@@ -2107,12 +2153,12 @@ textarea:focus { outline: none; border-color: #3b82f6; }
             <div id="addapi-ui" class="src-list"></div>
             <div style="display:flex;gap:8px;margin-top:8px;align-items:center">
               <button class="small ghost" id="addapi-add">+ 自定义源</button>
-              <span class="hint" style="margin:0 0 0 auto">高级: <a href="#" id="addapi-toggle-text" style="color:#7fb3ff;text-decoration:none">切到文本编辑</a></span>
+              <span class="hint" style="margin:0 0 0 auto">高级: <a href="#" id="addapi-toggle-text" style="color:#2563eb;text-decoration:none">切到文本编辑</a></span>
             </div>
             <div id="addapi-text" style="display:none;margin-top:8px">
               <textarea id="st-ADDAPI"></textarea>
               <div style="display:flex;justify-content:flex-end;margin-top:6px">
-                <a href="#" id="addapi-toggle-ui" style="color:#7fb3ff;text-decoration:none;font-size:12px">← 切回清单</a>
+                <a href="#" id="addapi-toggle-ui" style="color:#2563eb;text-decoration:none;font-size:12px">← 切回清单</a>
               </div>
             </div>
             <div class="hint">勾选启用就会参与合成池。KV 缓存 10 分钟。地区/标签是给这批节点打的默认属性，方便后面筛。</div>
@@ -2210,11 +2256,11 @@ textarea:focus { outline: none; border-color: #3b82f6; }
         </div>
 
         <div id="st-f-preview-result" style="margin-top:18px;display:none">
-          <h3 style="margin:0 0 8px 0;font-size:14px;color:#a8bfe0">预览</h3>
-          <div id="st-f-preview-summary" style="font-size:13px;color:#8ba3c7;margin-bottom:10px"></div>
-          <div style="max-height:300px;overflow:auto;border:1px solid #1f2d4a;border-radius:8px">
+          <h3 style="margin:0 0 8px 0;font-size:14px;color:#374151">预览</h3>
+          <div id="st-f-preview-summary" style="font-size:13px;color:#6b7280;margin-bottom:10px"></div>
+          <div style="max-height:300px;overflow:auto;border:1px solid #e5e7eb;border-radius:8px">
             <table style="width:100%;font-size:12px">
-              <thead style="background:#1b2942;position:sticky;top:0">
+              <thead style="background:#f9fafb;position:sticky;top:0">
                 <tr>
                   <th style="text-align:left;padding:6px 8px">地址</th>
                   <th style="text-align:left;padding:6px 8px">地区</th>
@@ -2230,7 +2276,7 @@ textarea:focus { outline: none; border-color: #3b82f6; }
         </div>
 
         <details style="margin-top:14px">
-          <summary style="cursor:pointer;color:#8ba3c7;font-size:13px">⚙ 用户端可用的 URL 参数（高级）</summary>
+          <summary style="cursor:pointer;color:#6b7280;font-size:13px">⚙ 用户端可用的 URL 参数（高级）</summary>
           <div class="hint" style="margin-top:8px;line-height:1.7">
             订阅链接后加参数可临时覆盖筛选，不改后台配置：<br>
             <code>?region=us,hk</code> — 临时只取美港<br>
@@ -2253,17 +2299,17 @@ textarea:focus { outline: none; border-color: #3b82f6; }
 
     <label style="margin-bottom:8px">选择套餐</label>
     <div class="plan-cards" id="plan-cards">
-      <div class="plan-card" data-plan="trial" data-total="5"  data-days="3"   data-daily="0">
-        <div class="pt">体验</div><div class="pv">3 天</div><div class="ps">5 GB</div>
+      <div class="plan-card" data-plan="trial" data-total="2"  data-days="3"   data-daily="0">
+        <div class="pt">体验</div><div class="pv">3 天</div><div class="ps">2 GB</div>
       </div>
-      <div class="plan-card active" data-plan="monthly" data-total="100" data-days="30" data-daily="0">
-        <div class="pt">月卡</div><div class="pv">30 天</div><div class="ps">100 GB</div>
+      <div class="plan-card active" data-plan="monthly" data-total="30" data-days="30" data-daily="0">
+        <div class="pt">月卡</div><div class="pv">30 天</div><div class="ps">30 GB</div>
       </div>
-      <div class="plan-card" data-plan="quarterly" data-total="300" data-days="90" data-daily="0">
-        <div class="pt">季卡</div><div class="pv">90 天</div><div class="ps">300 GB</div>
+      <div class="plan-card" data-plan="quarterly" data-total="100" data-days="90" data-daily="0">
+        <div class="pt">季卡</div><div class="pv">90 天</div><div class="ps">100 GB</div>
       </div>
-      <div class="plan-card" data-plan="yearly" data-total="1024" data-days="365" data-daily="0">
-        <div class="pt">年卡</div><div class="pv">365 天</div><div class="ps">1 TB</div>
+      <div class="plan-card" data-plan="yearly" data-total="400" data-days="365" data-daily="0">
+        <div class="pt">年卡</div><div class="pv">365 天</div><div class="ps">400 GB</div>
       </div>
       <div class="plan-card" data-plan="unlimited" data-total="0" data-days="30" data-daily="0">
         <div class="pt">月不限流</div><div class="pv">30 天</div><div class="ps">不限额</div>
@@ -2295,10 +2341,10 @@ textarea:focus { outline: none; border-color: #3b82f6; }
   <div class="modal-inner" style="max-width:560px">
     <h1 style="font-size:18px;margin-bottom:8px">订阅链接</h1>
 
-    <div style="background:#1b2942;border:1px solid #2a3f66;border-radius:10px;padding:12px 14px;margin-bottom:14px">
-      <div style="font-size:12px;color:#7f9cc7;margin-bottom:6px">⭐ 推荐发给客户（手机打开就能一键导入）</div>
+    <div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:10px;padding:14px 16px;margin-bottom:14px">
+      <div style="font-size:12px;color:#1e40af;margin-bottom:8px;font-weight:500">⭐ 推荐发给客户（手机打开就能一键导入）</div>
       <label style="margin-top:0">客户订阅页</label>
-      <input id="sub-page" readonly style="background:#0f1a30;font-weight:600">
+      <input id="sub-page" readonly style="background:#ffffff;font-weight:500">
       <div style="margin-top:6px;display:flex;gap:6px;align-items:center">
         <button class="small" id="sub-copy-page">复制</button>
         <button class="small ghost" id="sub-open-page">在新标签打开</button>
@@ -2327,7 +2373,7 @@ textarea:focus { outline: none; border-color: #3b82f6; }
       <button class="small ghost" id="trojan-copy">复制 Trojan</button>
     </div>
 
-    <div style="margin-top:14px;padding:10px 12px;background:#0f1a30;border:1px solid #1f2d4a;border-radius:8px;font-size:12px;color:#8ba3c7">
+    <div style="margin-top:14px;padding:10px 12px;background:#fafafa;border:1px solid #e5e7eb;border-radius:8px;font-size:12px;color:#6b7280">
       协议切换：去「节点设置」tab 勾选 VLESS / Trojan，保存后通用订阅会自动包含所有启用的协议。
     </div>
 
@@ -2961,21 +3007,21 @@ $('#st-f-preview').onclick = async () => {
     for (const n of (r.nodes || [])) {
       const tr = document.createElement('tr');
       tr.innerHTML = \`
-        <td style="padding:5px 8px;border-top:1px solid #1f2d4a">\${n.addr}:\${n.port}</td>
-        <td style="padding:5px 8px;border-top:1px solid #1f2d4a;color:#7fb3ff">\${n.region || 'auto'}</td>
-        <td style="padding:5px 8px;border-top:1px solid #1f2d4a;color:#8ba3c7">\${(n.tags||[]).join(', ') || '—'}</td>
-        <td style="padding:5px 8px;border-top:1px solid #1f2d4a;color:#a8bfe0">\${n.protos ? n.protos.join('+') : '默认'}</td>
-        <td style="padding:5px 8px;border-top:1px solid #1f2d4a;color:#6b7f9f">\${n.source}</td>
+        <td style="padding:5px 8px;border-top:1px solid #f3f4f6">\${n.addr}:\${n.port}</td>
+        <td style="padding:5px 8px;border-top:1px solid #f3f4f6;color:#2563eb">\${n.region || 'auto'}</td>
+        <td style="padding:5px 8px;border-top:1px solid #f3f4f6;color:#6b7280">\${(n.tags||[]).join(', ') || '—'}</td>
+        <td style="padding:5px 8px;border-top:1px solid #f3f4f6;color:#374151">\${n.protos ? n.protos.join('+') : '默认'}</td>
+        <td style="padding:5px 8px;border-top:1px solid #f3f4f6;color:#9ca3af">\${n.source}</td>
       \`;
       tbody.appendChild(tr);
     }
     const byRegion = r.by_region || {};
     const regionSum = Object.entries(byRegion)
       .sort((a,b) => b[1] - a[1])
-      .map(([k,v]) => \`<span style="display:inline-block;padding:2px 8px;margin:2px;background:#1b2942;border-radius:4px;color:#a8bfe0"><b>\${k}</b>:\${v}</span>\`)
+      .map(([k,v]) => \`<span style="display:inline-block;padding:2px 8px;margin:2px;background:#f9fafb;border-radius:4px;color:#374151"><b>\${k}</b>:\${v}</span>\`)
       .join('');
     $('#st-f-preview-summary').innerHTML =
-      \`合成池 <b style="color:#fff">\${r.total_before}</b> 个 → 筛后 <b style="color:#7fb3ff">\${r.total_after}</b> 个<br>\${regionSum || ''}\`;
+      \`合成池 <b style="color:#111827">\${r.total_before}</b> 个 → 筛后 <b style="color:#2563eb">\${r.total_after}</b> 个<br>\${regionSum || ''}\`;
     box.style.display = 'block';
   } catch (e) { toast('预览失败: ' + e.message); }
 };
