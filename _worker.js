@@ -2472,8 +2472,16 @@ code { background: #f3f4f6; padding: 1px 5px; border-radius: 3px; font-size: 12p
       </div>
 
       <div class="card" style="margin-top:16px">
-        <h2>订阅筛选</h2>
-        <p class="hint" style="margin-bottom:14px">从上面「节点地址列表」+「优选IP」合成的节点池里，再次按地区/标签筛一刀。客户端订阅时生效，不影响节点本身的存储。</p>
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:10px">
+          <div>
+            <h2 style="margin:0 0 4px 0">订阅筛选</h2>
+            <p class="hint" style="margin:0">从合成池里按地区/标签筛一刀。客户端订阅时生效，不影响节点存储。</p>
+          </div>
+          <div style="display:flex;gap:6px;flex-shrink:0">
+            <button class="ghost small" id="f-clear-regions" title="取消所有地区选择(等于保留所有)">清空地区</button>
+            <button class="ghost small" id="f-reset-all" title="全部筛选条件重置">重置全部</button>
+          </div>
+        </div>
 
         <div class="kv">
           <label>只保留地区</label>
@@ -3275,6 +3283,18 @@ $('#st-f-save').onclick = async () => {
     toast('✓ 筛选规则已保存，60 秒内生效');
   } catch (e) { toast('保存失败: ' + e.message); }
 };
+$('#f-clear-regions').onclick = () => {
+  _filterState.regions.clear();
+  _filterState.exclude_regions.clear();
+  renderRegionChips('#f-regions-chips', _filterState.regions, false);
+  renderRegionChips('#f-exclude-regions-chips', _filterState.exclude_regions, true);
+  toast('已清空所有地区选择 (点保存生效)');
+};
+$('#f-reset-all').onclick = () => {
+  if (!confirm('重置所有筛选条件为默认值 (地区全放行, 标签不筛, total_max=60)?')) return;
+  writeFilterToUI({ regions: [], exclude_regions: [], include_tags: [], exclude_tags: [], max_per_region: 0, total_max: 60 });
+  toast('已重置筛选 (点保存生效)');
+};
 
 // 节点表格按钮
 $('#nodes-add').onclick = () => addNodeRow();
@@ -3339,16 +3359,30 @@ $('#st-f-preview').onclick = async () => {
     const box = $('#st-f-preview-result');
     const tbody = $('#st-f-preview-tbody');
     tbody.innerHTML = '';
-    for (const n of (r.nodes || [])) {
-      const tr = document.createElement('tr');
-      tr.innerHTML = \`
-        <td style="padding:5px 8px;border-top:1px solid #f3f4f6">\${n.addr}:\${n.port}</td>
-        <td style="padding:5px 8px;border-top:1px solid #f3f4f6;color:#2563eb">\${n.region || 'auto'}</td>
-        <td style="padding:5px 8px;border-top:1px solid #f3f4f6;color:#6b7280">\${(n.tags||[]).join(', ') || '—'}</td>
-        <td style="padding:5px 8px;border-top:1px solid #f3f4f6;color:#374151">\${n.protos ? n.protos.join('+') : '默认'}</td>
-        <td style="padding:5px 8px;border-top:1px solid #f3f4f6;color:#9ca3af">\${n.source}</td>
-      \`;
-      tbody.appendChild(tr);
+    if ((r.nodes || []).length === 0) {
+      // 关键提示: 区分"池空"和"筛掉"两种情况
+      let msg;
+      if (r.total_before === 0) {
+        msg = \`<b style="color:#b91c1c">节点池是空的</b><br><br>
+               去上面「节点设置」→「优选 IP 源」启用几个，或者点页面顶部「⚡ 一键推荐配置」一键搞定。\`;
+      } else {
+        msg = \`<b style="color:#b45309">合成池有 \${r.total_before} 个节点, 但筛选规则把它们全剔除了</b><br><br>
+               最常见原因: 「只保留地区」选了所有 20 个地区, 但优选源节点的 region=auto (未分类), 不在白名单里, 全被干掉。<br><br>
+               解决: 点下面「清空地区选择」按钮, 让筛选变成"保留所有"。\`;
+      }
+      tbody.innerHTML = \`<tr><td colspan="5" style="text-align:center;padding:28px 16px;color:#374151;line-height:1.7;font-size:13px">\${msg}</td></tr>\`;
+    } else {
+      for (const n of (r.nodes || [])) {
+        const tr = document.createElement('tr');
+        tr.innerHTML = \`
+          <td style="padding:5px 8px;border-top:1px solid #f3f4f6">\${n.addr}:\${n.port}</td>
+          <td style="padding:5px 8px;border-top:1px solid #f3f4f6;color:#2563eb">\${n.region || 'auto'}</td>
+          <td style="padding:5px 8px;border-top:1px solid #f3f4f6;color:#6b7280">\${(n.tags||[]).join(', ') || '—'}</td>
+          <td style="padding:5px 8px;border-top:1px solid #f3f4f6;color:#374151">\${n.protos ? n.protos.join('+') : '默认'}</td>
+          <td style="padding:5px 8px;border-top:1px solid #f3f4f6;color:#9ca3af">\${n.source}</td>
+        \`;
+        tbody.appendChild(tr);
+      }
     }
     const byRegion = r.by_region || {};
     const regionSum = Object.entries(byRegion)
