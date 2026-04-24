@@ -784,8 +784,9 @@ function parseNodeFilter(raw) {
       exclude_regions: Array.isArray(o.exclude_regions) ? o.exclude_regions : [],
       include_tags: Array.isArray(o.include_tags) ? o.include_tags : [],
       exclude_tags: Array.isArray(o.exclude_tags) ? o.exclude_tags : [],
-      max_per_region: Number(o.max_per_region) || 0,
-      total_max: Number(o.total_max) || 60,
+      // 注意: 0 是合法值 = 不限, 不能被 || 60 默认值掩盖
+      max_per_region: Number.isFinite(Number(o.max_per_region)) ? Number(o.max_per_region) : 0,
+      total_max:      Number.isFinite(Number(o.total_max))      ? Number(o.total_max)      : 60,
     };
   } catch {
     return { regions: [], exclude_regions: [], include_tags: [], exclude_tags: [], max_per_region: 0, total_max: 60 };
@@ -2472,15 +2473,27 @@ code { background: #f3f4f6; padding: 1px 5px; border-radius: 3px; font-size: 12p
       </div>
 
       <div class="card" style="margin-top:16px">
-        <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:10px">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:14px">
           <div>
             <h2 style="margin:0 0 4px 0">订阅筛选</h2>
-            <p class="hint" style="margin:0">从合成池里按地区/标签筛一刀。客户端订阅时生效，不影响节点存储。</p>
+            <p class="hint" style="margin:0">从合成池里按地区/标签筛一刀。改完自动保存，客户端订阅时生效。</p>
           </div>
-          <div style="display:flex;gap:6px;flex-shrink:0">
+          <div style="display:flex;gap:8px;flex-shrink:0;align-items:center">
+            <span id="filter-live-count" class="hint" style="color:#2563eb;font-weight:600;white-space:nowrap;font-size:13px">—</span>
             <button class="ghost small" id="f-clear-regions" title="取消所有地区选择(等于保留所有)">清空地区</button>
             <button class="ghost small" id="f-reset-all" title="全部筛选条件重置">重置全部</button>
           </div>
+        </div>
+
+        <!-- 快速预设 -->
+        <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:18px;padding:10px 14px;background:#fafafa;border:1px solid #f3f4f6;border-radius:8px;align-items:center">
+          <span style="font-size:12px;color:#374151;font-weight:600;margin-right:4px">快速预设:</span>
+          <button class="ghost small f-preset" data-preset="mainland">⭐ 美港日</button>
+          <button class="ghost small f-preset" data-preset="asia">🌏 亚洲</button>
+          <button class="ghost small f-preset" data-preset="euro-us">🌍 欧美</button>
+          <button class="ghost small f-preset" data-preset="greater-china">中港台</button>
+          <button class="ghost small f-preset" data-preset="exclude-risky">🚫 排除敏感区</button>
+          <button class="ghost small f-preset" data-preset="top-only">精品(每区≤3)</button>
         </div>
 
         <div class="kv">
@@ -3288,13 +3301,66 @@ $('#f-clear-regions').onclick = () => {
   _filterState.exclude_regions.clear();
   renderRegionChips('#f-regions-chips', _filterState.regions, false);
   renderRegionChips('#f-exclude-regions-chips', _filterState.exclude_regions, true);
-  toast('已清空所有地区选择 (点保存生效)');
+  autoSaveAndRefreshCount();
 };
 $('#f-reset-all').onclick = () => {
-  if (!confirm('重置所有筛选条件为默认值 (地区全放行, 标签不筛, total_max=60)?')) return;
-  writeFilterToUI({ regions: [], exclude_regions: [], include_tags: [], exclude_tags: [], max_per_region: 0, total_max: 60 });
-  toast('已重置筛选 (点保存生效)');
+  writeFilterToUI({ regions: [], exclude_regions: [], include_tags: [], exclude_tags: [], max_per_region: 0, total_max: 500 });
+  autoSaveAndRefreshCount();
+  toast('已重置筛选');
 };
+
+// --- 快速预设 ---
+const FILTER_PRESETS = {
+  'mainland':       { regions: ['us','hk','jp'],                       exclude_regions: [], total_max: 500 },
+  'asia':           { regions: ['us','hk','jp','sg','kr','tw','my','th','in','id','vn','ph'], exclude_regions: [], total_max: 500 },
+  'euro-us':        { regions: ['us','ca','gb','de','fr','nl','es','it','pl','se','no','fi','dk','ch','at','be','ie','pt','cz','hu','ro','gr'], exclude_regions: [], total_max: 500 },
+  'greater-china':  { regions: ['hk','tw','mo'],                       exclude_regions: [], total_max: 500 },
+  'exclude-risky':  { regions: [],                                     exclude_regions: ['ru','ir','kp'], total_max: 500 },
+  'top-only':       { regions: [], exclude_regions: [], max_per_region: 3, total_max: 60 },
+};
+document.querySelectorAll('.f-preset[data-preset]').forEach(btn => {
+  btn.onclick = () => {
+    const name = btn.dataset.preset;
+    const preset = FILTER_PRESETS[name];
+    if (!preset) return;
+    const current = parseFilterFromUI();
+    writeFilterToUI({ ...current, ...preset });
+    autoSaveAndRefreshCount();
+    toast('已应用: ' + btn.textContent.trim());
+  };
+});
+
+// --- 实时保存 + 刷新筛后节点数 (防抖 500ms) ---
+let _fDebounce = null;
+function autoSaveAndRefreshCount() {
+  clearTimeout(_fDebounce);
+  _fDebounce = setTimeout(async () => {
+    const el = $('#filter-live-count');
+    if (el) el.textContent = '计算中…';
+    try {
+      const filter = parseFilterFromUI();
+      await api('/admin/settings', { method: 'POST', body: JSON.stringify({ NODE_FILTER: JSON.stringify(filter) }) });
+      const r = await api('/admin/preview-nodes?_t=' + Date.now());
+      if (el) el.textContent = \`筛后 \${r.total_after} / \${r.total_before}\`;
+    } catch (e) {
+      if (el) el.textContent = '—';
+    }
+  }, 500);
+}
+
+// hook chip 点击和按钮组, 让每次变化自动刷新
+function wireFilterLiveUpdates() {
+  // 用事件委托, 所有 .chip / .btn-group button 点击后触发
+  const containers = ['#f-regions-chips','#f-exclude-regions-chips','#f-include-tags-chips','#f-exclude-tags-chips','#f-max-per-region-btns','#f-total-max-btns'];
+  for (const sel of containers) {
+    const el = $(sel);
+    if (!el || el._wired) continue;
+    el.addEventListener('click', () => autoSaveAndRefreshCount(), true);
+    el._wired = true;
+  }
+}
+// 首次 loadSettings 后调一次 wire
+setTimeout(() => { wireFilterLiveUpdates(); autoSaveAndRefreshCount(); }, 1000);
 
 // 节点表格按钮
 $('#nodes-add').onclick = () => addNodeRow();
